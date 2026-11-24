@@ -1,6 +1,6 @@
 # CodeLens · 项目结构可视化工具
 
-[![CI](https://github.com/kane0204/CodeLens/actions/workflows/ci.yml/badge.svg)](https://github.com/kane0204/CodeLens/actions/workflows/ci.yml)
+[![CI](https://github.com/88483751/CodeLens/actions/workflows/ci.yml/badge.svg)](https://github.com/88483751/CodeLens/actions/workflows/ci.yml)
 ![阶段](https://img.shields.io/badge/%E9%98%B6%E6%AE%B5-Week--01%20%E9%9C%80%E6%B1%82%E5%AE%9A%E4%B9%89-blue)
 ![许可证](https://img.shields.io/badge/License-MIT-green)
 
@@ -142,6 +142,7 @@ CodeLens/
 | [docs/software/local-workbench.md](docs/software/local-workbench.md) | 本地真实分析工作台、接口与限制 |
 | [docs/mgmt/project-setup.md](docs/mgmt/project-setup.md) | 看板、标签、里程碑配置 |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | 贡献指南 |
+| https://kane0204.github.io/CodeLens/ | 答辩报告|
 
 ## 许可证
 
