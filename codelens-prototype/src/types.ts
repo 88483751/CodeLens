@@ -282,6 +282,7 @@ export interface HistoryDetail {
   issues: HistoricalIssue[];
   ai: AiReviewResult | null;
   ai_status: string;
+  scoped?: Record<string, ScopedReviewResult>;
 }
 
 export interface ExplainCitation {

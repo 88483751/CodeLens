@@ -236,6 +236,31 @@ test('review assembles split UTF-8 and NDJSON events, including an unterminated 
   assert.deepEqual(progress, [event]);
 });
 
+test('review cancels a stream that stops reporting progress', async () => {
+  vi.useFakeTimers();
+  try {
+    const cancel = vi.fn();
+    const stream = new ReadableStream({ cancel });
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(stream));
+    const result = reviewProject(reviewRequest, token, ignoreProgress, new AbortController().signal);
+    const rejected = assert.rejects(result, { code: 'timeout', message: /120 秒没有更新/ });
+    await vi.advanceTimersByTimeAsync(120_000);
+    await rejected;
+    assert.equal(cancel.mock.calls.length, 1);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+test('review resolves on the result event even before the connection closes', async () => {
+  const report = { scope: 'project', sections: {} };
+  const stream = new ReadableStream({ start(controller) {
+    controller.enqueue(Buffer.from(JSON.stringify({ type: 'result', result: report }) + '\n'));
+  } });
+  vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(stream));
+  assert.deepEqual(await reviewProject(reviewRequest, token, ignoreProgress, new AbortController().signal), report);
+});
+
 for (const { title, body, status, message } of [
   { title: 'server error event', body: '{"type":"error","error":"timeout"}\n', status: 502, message: /timeout/ },
   { title: 'malformed NDJSON', body: '{broken\n', status: 0, message: /格式无效/ },

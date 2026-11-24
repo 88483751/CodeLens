@@ -10,6 +10,10 @@ import {
   saveStoredApiKey,
   type AnalyzeProgress,
 } from '../api/client';
+import { browserAccountStorageKey, browserMode, syncMode } from '../api/browserMode';
+import { syncScopedReview } from '../api/historySync';
+import { browserModelUrl } from '../api/browserReview';
+import { browserApiKey } from '../api/browserStorage';
 import { filesFromDataTransfer, prepareSelection, type RawFile } from '../lib/files';
 import { exportReport, type ExportFormat } from '../lib/export';
 import { logger } from '../lib/logger';
@@ -176,7 +180,7 @@ const AppContext = createContext<AppContextValue | null>(null);
 
 function loadSettings(): LlmSettings {
   try {
-    const raw = localStorage.getItem(SETTINGS_KEY);
+    const raw = localStorage.getItem(browserAccountStorageKey(SETTINGS_KEY));
     if (!raw) return { baseUrl: '', model: '', apiKey: '' };
     const parsed: unknown = JSON.parse(raw);
     if (!parsed || typeof parsed !== 'object') return { baseUrl: '', model: '', apiKey: '' };
@@ -194,6 +198,10 @@ function loadSettings(): LlmSettings {
 
 function validBaseUrl(value: string): boolean {
   try {
+    if (browserMode) {
+      browserModelUrl(value);
+      return true;
+    }
     const url = new URL(value);
     return (
       (url.protocol === 'http:' || url.protocol === 'https:') &&
@@ -233,10 +241,39 @@ function validatedSettings(next: LlmSettings, hasStoredKey = false): { settings:
   if (!validBaseUrl(settings.baseUrl)) {
     return {
       settings,
-      error: '请输入 HTTP 或 HTTPS 基础地址，不要在地址中包含账号、密码、查询参数或片段。',
+      error: browserMode
+        ? '请输入独立的 HTTPS 模型接口地址，不要包含账号、密码、查询参数或片段。'
+        : '请输入 HTTP 或 HTTPS 基础地址，不要在地址中包含账号、密码、查询参数或片段。',
     };
   }
-  return { settings };
+  return { settings, error: browserKeyError(settings) };
+}
+
+function browserKeyError(settings: LlmSettings): string | undefined {
+  if (browserMode && !settings.apiKey && !browserApiKey(browserModelUrl(settings.baseUrl).origin)) {
+    return '请为此模型接口输入 API Key。';
+  }
+}
+
+function storeModelKey(settings: LlmSettings, token: string) {
+  return browserMode
+    ? saveStoredApiKey(settings.apiKey, token, browserModelUrl(settings.baseUrl).origin)
+    : saveStoredApiKey(settings.apiKey, token);
+}
+
+function analysisNotice(data: AnalyzeResult, toast: (message: string, kind: ToastKind) => void) {
+  toast(`分析完成：${data.summary.parsed} 个文件，${data.summary.findings} 条静态问题`, 'success');
+  if (browserMode && data.summary.parsed && !data.history) {
+    toast('浏览器无法保存本次分析历史，请检查站点存储空间和权限。', 'warning');
+  }
+  const recurring = data.history?.recurring.length ?? 0;
+  if (recurring) toast(`发现 ${recurring} 个反复出现的问题，可在「质量体检」中查看`, 'warning');
+}
+
+function modelSettingsNotice(persisted: boolean, credentials: CredentialStoreInfo) {
+  if (persisted) return `设置已保存，API Key 已存入 ${credentials.backend || '系统凭据库'}`;
+  return browserMode ? 'API Key 已保存，接口地址与模型名称仅在当前页面生效'
+    : 'API Key 已安全保存，但浏览器无法保存接口地址与模型名称';
 }
 
 function readHash(): Route {
@@ -436,6 +473,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       try {
         const review = await reviewProject(
           { project: data.project, files, settings: modelSettings,
+            ...(browserMode && { analysis: data }),
             useStoredCredential: credentials.configured,
             ...(data.history && { history: data.history, useHistory }) },
           token,
@@ -473,9 +511,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     const settings = currentSettings.current;
     if (window.location.hash !== '#overview') window.location.hash = 'overview';
     setRoute('overview');
-    toast(`分析完成：${data.summary.parsed} 个文件，${data.summary.findings} 条静态问题`, 'success');
-    const recurring = data.history?.recurring.length ?? 0;
-    if (recurring) toast(`发现 ${recurring} 个反复出现的问题，可在「质量体检」中查看`, 'warning');
+    analysisNotice(data, toast);
     if (autoReview && providerConfigured(settings, credentials.configured)) {
       const review = await executeReview(data, settings);
       if (review) {
@@ -495,10 +531,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
     reviewController.current?.abort();
     reviewController.current = null;
     resetAfterResult(data);
+    if (detail.scoped) setScopedReviews(new Map(Object.entries(detail.scoped)));
     setAiReview(detail.ai);
     setReviewError(detail.ai
       ? ''
-      : '历史快照不含原始源码，无法重新运行 AI 审查；可导入当前项目生成新结果。');
+      : syncMode ? '重新导入同一版本的源码，可继续已同步的审查进度。'
+        : browserMode ? '' : '历史快照不含原始源码，无法重新运行 AI 审查；可导入当前项目生成新结果。');
     if (window.location.hash !== '#overview') window.location.hash = 'overview';
     setRoute('overview');
     toast('已打开历史分析记录', 'success');
@@ -540,7 +578,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         );
         resetAfterResult(data);
 
-        await announceAnalysis(data, autoReview);
+        await announceAnalysis(data, autoReview && !browserMode);
       } catch (error) {
         logger.warn('analyze', 'analysis.stopped', {
           aborted: isAbortError(error),
@@ -664,6 +702,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const saveScopedReview = useCallback((data: AnalyzeResult, key: string, review: ScopedReviewResult) => {
     if (data === currentProject.current) {
       setScopedReviews((current) => new Map(current).set(key, review));
+      if (syncMode && data.history) void syncScopedReview(data.history.analysis_id, key, review);
     }
   }, []);
 
@@ -702,8 +741,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
     currentSettings.current = { baseUrl, model, apiKey };
     setSettings(currentSettings.current);
     try {
-      if (baseUrl || model) localStorage.setItem(SETTINGS_KEY, JSON.stringify({ baseUrl, model }));
-      else localStorage.removeItem(SETTINGS_KEY);
+      const key = browserAccountStorageKey(SETTINGS_KEY);
+      if (baseUrl || model) localStorage.setItem(key, JSON.stringify({ baseUrl, model }));
+      else localStorage.removeItem(key);
     } catch {
       logger.debug('settings', 'localStorage.write_unavailable');
       // 浏览器禁止本地存储时仅在当前页面生效
@@ -721,10 +761,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
       let credentialStatus = credentials;
       if (checked.settings.apiKey) {
         try {
-          credentialStatus = await saveStoredApiKey(checked.settings.apiKey, token);
+          credentialStatus = await storeModelKey(checked.settings, token);
           setCredentials(credentialStatus);
         } catch (error) {
-          setSettingsError(errorText(error, '无法保存 API Key 到系统凭据库。'));
+          setSettingsError(errorText(error, browserMode ? '无法保存 API Key 到当前标签页。' : '无法保存 API Key 到系统凭据库。'));
           return;
         }
       }
@@ -733,19 +773,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
       setSettings(currentSettings.current);
       let persisted = true;
       try {
-        localStorage.setItem(SETTINGS_KEY, JSON.stringify({ baseUrl, model }));
+        localStorage.setItem(browserAccountStorageKey(SETTINGS_KEY), JSON.stringify({ baseUrl, model }));
       } catch {
         logger.debug('settings', 'localStorage.save_unavailable');
         persisted = false;
       }
       setSettingsOpen(false);
       setSettingsError('');
-      toast(
-        persisted
-          ? `设置已保存，API Key 已存入 ${credentialStatus.backend || '系统凭据库'}`
-          : 'API Key 已安全保存，但浏览器无法保存接口地址与模型名称',
-        persisted ? 'success' : 'warning',
-      );
+      toast(modelSettingsNotice(persisted, credentialStatus), persisted ? 'success' : 'warning');
     },
     [credentials, token, toast],
   );
@@ -757,9 +792,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
       currentSettings.current = { ...currentSettings.current, apiKey: '' };
       setSettings(currentSettings.current);
       setSettingsError('');
-      toast('已清除系统凭据库中的 API Key', 'success');
+      toast(browserMode ? '已清除当前标签页的 API Key' : '已清除系统凭据库中的 API Key', 'success');
     } catch (error) {
-      setSettingsError(errorText(error, '无法清除系统凭据库中的 API Key。'));
+      setSettingsError(errorText(error, browserMode ? '无法清除当前标签页的 API Key。' : '无法清除系统凭据库中的 API Key。'));
     }
   }, [token, toast]);
 

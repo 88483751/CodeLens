@@ -14,8 +14,16 @@ import type {
   HistoryDetail,
 } from '../types';
 import { logger } from '../lib/logger';
+import { browserMode, syncMode } from './browserMode';
+import { flushSync, recordSyncAnalysis, syncDelete, syncDetail, syncProjects } from './historySync';
+import { browserCachedReview, browserExplain, browserReview } from './browserReview';
+import {
+  browserCredentials, browserHistoryDetail, browserHistoryProjects, recordBrowserAnalysis,
+  removeBrowserHistory, setBrowserApiKey,
+} from './browserStorage';
 
 const STATUS_TIMEOUT = 5000;
+const REVIEW_IDLE_TIMEOUT = 120_000;
 const B64_CHUNK = 0x8000;
 
 export class ApiError extends Error {
@@ -159,6 +167,11 @@ function postJson(path: string, payload: unknown, token: string, signal: AbortSi
 }
 
 export function fetchStatus(): Promise<StatusInfo> {
+  if (browserMode) return Promise.resolve({
+    ready: true, engine_version: 'WebAssembly', api_revision: 2, token: 'browser',
+    capabilities: ['analyze', 'project-review', 'review-checkpoints', 'project-history', 'browser-engine'],
+    credentials: browserCredentials(),
+  });
   return withLogging('api', '/api/status', {}, fetchStatusInner);
 }
 
@@ -232,15 +245,68 @@ async function analyzeProjectInner(
   if (signal.aborted) throw abortError();
   onProgress({ phase: 'upload', done: request.files.length, total: request.files.length });
 
+  const result = browserMode
+    ? await analyzeInBrowser(request.project, encoded, signal)
+    : await requestAnalysis(request.project, encoded, token, signal);
+  onProgress({ phase: 'done', done: request.files.length, total: request.files.length });
+  return result;
+}
+
+async function requestAnalysis(
+  project: string,
+  files: { path: string; content_base64: string }[],
+  token: string,
+  signal: AbortSignal,
+) {
   const response = await postJson('/api/analyze', {
-    project: request.project, files: encoded,
+    project, files,
   }, token, signal);
   const data = await parseJson(response);
   if (!response.ok) {
     throw apiErrorFrom(data, `分析请求失败（${response.status}）`, response.status);
   }
-  const result = readAnalysisResult(data);
-  onProgress({ phase: 'done', done: request.files.length, total: request.files.length });
+  return readAnalysisResult(data);
+}
+
+async function analyzeInBrowser(
+  project: string, files: { path: string; content_base64: string }[], signal: AbortSignal,
+) {
+  signal.throwIfAborted();
+  const worker = new Worker(new URL('./browserEngine.worker.ts', import.meta.url), { type: 'module' });
+  const base = new URL(import.meta.env.BASE_URL + 'engine/', document.baseURI).href;
+  let cleanup = () => worker.terminate();
+  const result = await new Promise<AnalyzeResult>((resolve, reject) => {
+    const abort = () => reject(signal.reason);
+    signal.addEventListener('abort', abort, { once: true });
+    const timer = window.setTimeout(() => reject(new ApiError('浏览器静态分析超时，请尝试更小的目录。')), 120_000);
+    worker.onmessage = ({ data }) => {
+      if (data.error) reject(new ApiError(data.error));
+      else {
+        try { resolve(readAnalysisResult(data.result)); }
+        catch (error) { reject(error); }
+      }
+    };
+    worker.onerror = () => reject(new ApiError('浏览器分析引擎启动失败，请检查部署目录中的 engine 文件。'));
+    try {
+      worker.postMessage({ base, payload: JSON.stringify({ project, files }) });
+    } catch (error) {
+      reject(error);
+    }
+    cleanup = () => {
+      worker.terminate();
+      signal.removeEventListener('abort', abort);
+      window.clearTimeout(timer);
+    };
+  }).finally(() => cleanup());
+
+  if (result.summary.parsed) {
+    try {
+      result.history = await (syncMode ? recordSyncAnalysis : recordBrowserAnalysis)(result, signal);
+    } catch {
+      signal.throwIfAborted();
+      result.warnings.push({ message: '浏览器无法保存本次分析历史，请检查站点存储空间和权限。' });
+    }
+  }
   return result;
 }
 
@@ -286,6 +352,7 @@ export function explainCode(
   token: string,
   signal: AbortSignal,
 ): Promise<ExplainResult> {
+  if (browserMode) return browserExplain(request, signal);
   return withLogging('api', '/api/explain', {}, () => explainCodeInner(request, token, signal));
 }
 
@@ -348,6 +415,7 @@ export interface ReviewRequest {
   project: string;
   files: { path: string; content: string }[];
   settings: LlmSettings;
+  analysis?: Pick<AnalyzeResult, 'files' | 'graph' | 'findings'>;
   history?: AnalysisHistory;
   useHistory?: boolean;
   useStoredCredential?: boolean;
@@ -361,13 +429,16 @@ async function historyRequest<T>(endpoint: string, body: object, token: string, 
 }
 
 export const historyProjects = (token: string, signal: AbortSignal) =>
-  historyRequest<HistoryProject[]>('projects', {}, token, signal);
+  syncMode ? flushSync().then(() => syncProjects(signal))
+    : browserMode ? browserHistoryProjects(signal) : historyRequest<HistoryProject[]>('projects', {}, token, signal);
 
 export const historyDetail = (project: string, run: number, token: string, signal: AbortSignal) =>
-  historyRequest<HistoryDetail>('detail', { project_id: project, analysis_id: run }, token, signal);
+  syncMode ? syncDetail(run, signal) : browserMode ? browserHistoryDetail(project, run, signal)
+    : historyRequest<HistoryDetail>('detail', { project_id: project, analysis_id: run }, token, signal);
 
 export const deleteHistory = (project: string, run: number, token: string, signal: AbortSignal) =>
-  historyRequest<{ deleted: boolean }>('delete', { project_id: project, analysis_id: run }, token, signal);
+  syncMode ? syncDelete(run, signal) : browserMode ? removeBrowserHistory(project, run, signal)
+    : historyRequest<{ deleted: boolean }>('delete', { project_id: project, analysis_id: run }, token, signal);
 
 async function credentialRequest(
   endpoint: string,
@@ -385,13 +456,15 @@ async function credentialRequest(
   };
 }
 
-export function saveStoredApiKey(apiKey: string, token: string): Promise<CredentialStoreInfo> {
+export function saveStoredApiKey(apiKey: string, token: string, origin?: string): Promise<CredentialStoreInfo> {
+  if (browserMode) return Promise.resolve().then(() => setBrowserApiKey(apiKey, origin));
   return withLogging('api', '/api/credentials/save', {}, () =>
     credentialRequest('save', { api_key: apiKey }, token),
   );
 }
 
 export function deleteStoredApiKey(token: string): Promise<CredentialStoreInfo> {
+  if (browserMode) return Promise.resolve().then(() => setBrowserApiKey(''));
   return withLogging('api', '/api/credentials/delete', {}, () =>
     credentialRequest('delete', {}, token),
   );
@@ -410,6 +483,7 @@ export async function readCachedReview(
   token: string,
   signal: AbortSignal,
 ): Promise<ScopedReviewResult | null> {
+  if (browserMode) return browserCachedReview(request, signal);
   const payload = reviewPayload(request);
   const response = await postJson('/api/review/cached', payload, token, signal);
   const data = await parseJson(response);
@@ -446,6 +520,7 @@ export function reviewProject(
   onProgress: (progress: AiReviewProgress) => void,
   signal: AbortSignal,
 ): Promise<AiReviewResult | ScopedReviewResult> {
+  if (browserMode) return browserReview(request, onProgress, signal);
   return withLogging('api', '/api/review', {}, () =>
     reviewProjectInner(request, token, onProgress, signal),
   );
@@ -461,13 +536,44 @@ async function reviewProjectInner(
     throw new ApiError('请先在模型设置中完整填写接口地址、模型名称和 API Key。');
   }
   const payload = reviewPayload(request);
+  return withReviewDeadline(signal, (activeSignal, refresh) => requestReview(payload, token, (progress) => {
+    refresh();
+    onProgress(progress);
+  }, activeSignal));
+}
+
+async function withReviewDeadline<T>(signal: AbortSignal,
+  run: (signal: AbortSignal, refresh: () => void) => Promise<T>): Promise<T> {
+  signal.throwIfAborted();
+  const controller = new AbortController();
+  const abort = () => controller.abort(signal.reason);
+  signal.addEventListener('abort', abort, { once: true });
+  const expire = () => controller.abort(new ApiError('AI 审查超过 120 秒没有更新，已停止等待。可继续解读。', 0, 'timeout'));
+  let timer = setTimeout(expire, REVIEW_IDLE_TIMEOUT);
+  const refresh = () => {
+    clearTimeout(timer);
+    timer = setTimeout(expire, REVIEW_IDLE_TIMEOUT);
+  };
+  try {
+    return await run(controller.signal, refresh);
+  } catch (error) {
+    controller.signal.throwIfAborted();
+    throw error;
+  } finally {
+    clearTimeout(timer);
+    signal.removeEventListener('abort', abort);
+  }
+}
+
+async function requestReview(payload: unknown, token: string,
+  onProgress: (progress: AiReviewProgress) => void, signal: AbortSignal) {
   const response = await postJson('/api/review', payload, token, signal);
   if (!response.ok) {
     const data = await parseJson(response);
     throw apiErrorFrom(data, `AI 审查失败（${response.status}）`, response.status);
   }
   if (!response.body) throw new ApiError('浏览器不支持读取 AI 审查进度');
-  return readReviewStream(response.body, onProgress);
+  return readReviewStream(response.body, onProgress, signal);
 }
 
 function parseReviewEvent(line: string): ReviewStreamEvent {
@@ -505,9 +611,12 @@ function reviewResult(event: ReviewStreamEvent, onProgress: (progress: AiReviewP
 async function readReviewStream(
   body: ReadableStream<Uint8Array>,
   onProgress: (progress: AiReviewProgress) => void,
+  signal: AbortSignal,
 ): Promise<AiReviewResult | ScopedReviewResult> {
   const reader = body.getReader();
   const decoder = new TextDecoder();
+  const cancel = () => { void reader.cancel().catch(() => undefined); };
+  signal.addEventListener('abort', cancel, { once: true });
   let buffer = '';
   let finalResult: AiReviewResult | ScopedReviewResult | null = null;
 
@@ -517,17 +626,24 @@ async function readReviewStream(
   };
 
   try {
-    for (;;) {
+    while (!finalResult) {
+      signal.throwIfAborted();
       const { done, value } = await reader.read();
+      signal.throwIfAborted();
       if (done) break;
       buffer += decoder.decode(value, { stream: true });
       const lines = buffer.split('\n');
       buffer = lines.pop() ?? '';
-      for (const line of lines) handleLine(line);
+      for (const line of lines) {
+        handleLine(line);
+        if (finalResult) return finalResult;
+      }
     }
     buffer += decoder.decode();
     if (buffer.trim()) handleLine(buffer);
   } finally {
+    signal.removeEventListener('abort', cancel);
+    cancel();
     reader.releaseLock();
   }
   if (!finalResult) throw new ApiError('AI 审查未返回结果');

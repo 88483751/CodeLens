@@ -1,0 +1,8 @@
+Pyodide 0.27.7 is distributed under the Mozilla Public License 2.0.
+Source and license:
+https://github.com/pyodide/pyodide/tree/0.27.7
+https://github.com/pyodide/pyodide/blob/0.27.7/LICENSE
+
+This runtime includes CPython 3.12.7. Its source and license are available at:
+https://github.com/python/cpython/tree/v3.12.7
+https://docs.python.org/release/3.12.7/license.html

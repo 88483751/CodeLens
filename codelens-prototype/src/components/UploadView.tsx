@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type DragEvent } from 'react';
+import { browserMode } from '../api/browserMode';
 import { useApp } from '../state/AppState';
 import { filesFromInput, formatBytes, LIMITS, SUPPORTED_LABEL } from '../lib/files';
 import { Icon, LensMark } from './Icon';
@@ -227,7 +228,8 @@ function ConnectionFooter() {
       <div className="mt-5 flex flex-wrap items-center justify-between gap-2 border-t border-line pt-3 text-[10.5px] text-faint">
         <span className="inline-flex items-center gap-1.5">
           <i className={`inline-block h-1.5 w-1.5 rounded-full ${status === 'ready' ? 'bg-success' : status === 'connecting' ? 'bg-[#c9a84c]' : 'bg-danger'}`} />
-          {status === 'ready' ? '本机服务已连接' : status === 'connecting' ? '正在连接' : '等待服务连接'}
+          {browserMode ? '浏览器本地分析'
+            : status === 'ready' ? '本机服务已连接' : status === 'connecting' ? '正在连接' : '等待服务连接'}
         </span>
         <span className="num">{version || '—'}</span>
       </div>

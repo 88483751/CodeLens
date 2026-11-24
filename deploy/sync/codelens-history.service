@@ -1,0 +1,14 @@
+[Unit]
+Description=CodeLens account and review history service
+Requires=docker.service
+After=docker.service
+
+[Service]
+EnvironmentFile=/etc/codelens/history.env
+ExecStart=/usr/bin/docker run --rm --name codelens-history --network host --read-only --security-opt no-new-privileges --cap-drop ALL --env CODELENS_SYNC_ORIGIN --volume /var/lib/codelens:/data:Z codelens-history:local
+ExecStop=/usr/bin/docker stop codelens-history
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

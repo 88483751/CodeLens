@@ -1,0 +1,31 @@
+[Unit]
+Description=CodeLens API (FastAPI on 127.0.0.1:18766)
+Documentation=https://github.com/kane0204/CodeLens
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=codelens
+Group=codelens
+WorkingDirectory=/opt/codelens/app
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+# 如需服务端固定 AI 端点/密钥，把变量写进 /etc/codelens.env（权限 600）
+EnvironmentFile=-/etc/codelens.env
+ExecStart=/opt/codelens/venv/bin/python -B /opt/codelens/app/code/backend/asgi.py --port 18766
+Restart=always
+RestartSec=3
+TimeoutStopSec=15
+
+# 2GiB 机器的内存护栏：超出后被内核回收并自动重启，避免整机失联
+MemoryHigh=1200M
+MemoryMax=1500M
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target

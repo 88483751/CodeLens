@@ -777,6 +777,30 @@ test('batch reviews later files after a transport error and marks finished targe
   assert.match(container.querySelector('[role="alert"]').textContent, /src\/main.py.*连接中断/);
   assert.doesNotMatch(container.textContent, /旧项目审查错误/);
   assert.match(container.querySelector('button[title="src/nested/helper.py"]').textContent, /已解读/);
+  assert.equal(mocked.context.runReview.mock.calls.length, 0);
+  await act(async () => button('一键解读所有文件', container).click());
+  assert.deepEqual(mocked.selectedReview.mock.lastCall[0].files.map((file) => file.path), [path]);
+  assert.equal(mocked.context.runReview.mock.calls.length, 1);
+});
+
+test('batch stops other requests when the model rejects credentials', async () => {
+  Object.assign(mocked.context, { route: 'logic', token: 'local', settings: providerSettings });
+  const first = mocked.context.result.files[0];
+  mocked.context.result.files.push(...['a', 'b', 'c'].map((name) => ({ ...first, path: `src/${name}.py` })));
+  mocked.selectedReview.mockReset()
+    .mockRejectedValueOnce(new Error('模型接口返回 HTTP 401'))
+    .mockImplementation((_request, _token, _progress, signal) => new Promise((resolve) => {
+      signal.addEventListener('abort', () => resolve(report), { once: true });
+    }));
+  const { render, container } = mount();
+  render(<App />);
+  await act(async () => button('一键解读所有文件', container).click());
+  assert.equal(mocked.selectedReview.mock.calls.length, 3);
+  assert.equal(mocked.selectedReview.mock.lastCall[3].aborted, true);
+  assert.equal(mocked.context.runReview.mock.calls.length, 0);
+  assert.equal(mocked.context.openSettings.mock.calls.length, 1);
+  assert.match(container.querySelector('[role="alert"]').textContent, /HTTP 401/);
+  assert.equal(button('一键解读所有文件', container).disabled, false);
 });
 
 test('logic restores a saved file review after reimport without starting a model request', async () => {

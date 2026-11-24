@@ -71,6 +71,24 @@ class FastApiTests(unittest.IsolatedAsyncioTestCase):
         status, body = await self.request("POST", "/api/analyze", self.payload)
         self.assertEqual(json.loads(body)["summary"]["parsed"], 1)
 
+    async def test_local_workbench_serves_ui_and_keeps_analysis_on_loopback(self):
+        directory = Path(self.enterContext(TemporaryDirectory()))
+        web = directory / "web"
+        web.mkdir()
+        (web / "index.html").write_text("<h1>CodeLens</h1>", encoding="utf-8")
+        history = asgi.HistoryStore(directory / "history.sqlite3")
+        self.app = asgi.create_app(self.store, history, self.credentials, web_dir=web)
+
+        self.assertEqual(await self.request("GET", "/"), (200, b"<h1>CodeLens</h1>"))
+        self.assertEqual((await self.request("GET", "/api/status"))[0], 200)
+        self.assertEqual((await self.request("GET", "/api/missing"))[0], 404)
+        status, _ = await self.request("POST", "/api/analyze", self.payload,
+                                       {b"origin": b"https://download.example.test"})
+        self.assertEqual(status, 403)
+        status, body = await self.request("POST", "/api/analyze", self.payload)
+        self.assertEqual(status, 200)
+        self.assertIn("project_id", json.loads(body)["history"])
+
     async def test_secure_credential_routes_and_review_injection(self):
         status, body = await self.request("POST", "/api/credentials/save", {"api_key": "stored-key"})
         self.assertEqual(status, 200)

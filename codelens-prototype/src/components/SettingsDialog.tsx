@@ -3,6 +3,7 @@ import type { LlmSettings } from '../types';
 import { useApp } from '../state/AppState';
 import { Button, Modal } from './Ui';
 import { logger } from '../lib/logger';
+import { browserMode } from '../api/browserMode';
 
 const DEEPSEEK_DOCS = 'https://api-docs.deepseek.com/zh-cn/';
 
@@ -16,7 +17,9 @@ export function SettingsDialog() {
     <Modal
       open={settingsOpen}
       title="模型设置"
-      subtitle="接口地址与模型名称保存在本机；API Key 保存在操作系统凭据库。"
+      subtitle={browserMode
+        ? '接口地址与模型名称保存在当前浏览器。API Key 保留在当前标签页会话。'
+        : '接口地址与模型名称保存在本机；API Key 保存在操作系统凭据库。'}
       onClose={closeSettings}
       width={540}
       footer={<SettingsFooter onClose={closeSettings} />}
@@ -123,7 +126,9 @@ function ModelFields({ baseUrl, model }: ModelFieldsProps) {
         className="mt-1.5 h-9 w-full rounded-[4px] border border-line bg-card px-3 text-[12px] outline-none transition-colors placeholder:text-faint focus:border-primary"
       />
       <p className="mt-1 text-[10.5px] leading-relaxed text-faint">
-        仅支持 HTTP / HTTPS；地址中不能包含账号、密码、查询参数或片段。
+        {browserMode
+          ? '使用允许本站跨域访问的 HTTPS Chat Completions 接口。启动 AI 审查时，浏览器会将待分析源码和密钥直接发给该模型服务商。'
+          : '仅支持 HTTP / HTTPS；地址中不能包含账号、密码、查询参数或片段。'}
       </p>
 
       <label className="mt-5 block text-[11.5px] font-medium text-ink" htmlFor="llm-model">
@@ -175,7 +180,9 @@ function ApiKeyField({ apiKey, credentials, reveal, toggleReveal }: ApiKeyFieldP
           type={reveal ? 'text' : 'password'}
           autoComplete="off"
           spellCheck={false}
-          placeholder={credentials.configured ? '已安全保存；留空保持不变' : '输入 API Key'}
+          placeholder={credentials.configured
+            ? browserMode ? '已保存，留空保持不变' : '已安全保存；留空保持不变'
+            : '输入 API Key'}
           name="apiKey"
           defaultValue={apiKey}
           className="api-key-input num h-9 min-w-0 flex-1 rounded-[4px] border border-line bg-card px-3 text-[12px] outline-none transition-colors placeholder:text-faint focus:border-primary"
@@ -192,6 +199,7 @@ function ApiKeyField({ apiKey, credentials, reveal, toggleReveal }: ApiKeyFieldP
 }
 
 function credentialHint(credentials: ReturnType<typeof useApp>['credentials']) {
+  if (browserMode) return '密钥在当前标签页刷新后可用。其他标签页需要各自配置。';
   if (!credentials.available) {
     return '系统凭据库不可用。请重新运行 start-codelens 启动脚本安装后端依赖。';
   }

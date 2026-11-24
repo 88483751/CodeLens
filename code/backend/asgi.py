@@ -16,6 +16,7 @@ if __name__ == "__main__":
 import uvicorn
 from fastapi import Depends, FastAPI, Request
 from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ValidationError
 from starlette.concurrency import run_in_threadpool
 
@@ -231,12 +232,14 @@ def _review_store(store, history, options):
     return history.checkpoints(options["history_project"]) if options else store
 
 
-def create_app(store, history=None, credential_store=None):
+def create_app(store, history=None, credential_store=None, web_dir=None):
     app = FastAPI(title="CodeLens API", version=core.VERSION, redoc_url=None)
     app.middleware("http")(_observe)
     _routes(app, store, history, credential_store or secure.CREDENTIALS)
     if history is not None:
         _history_routes(app, history)
+    if web_dir is not None:
+        app.mount("/", StaticFiles(directory=web_dir, html=True), name="workbench")
     return app
 
 
@@ -325,12 +328,16 @@ def main():
     parser.add_argument("--log-level", choices=sorted(obs.LEVELS))
     parser.add_argument("--log-file")
     parser.add_argument("--no-log-file", action="store_true")
+    parser.add_argument("--web-dir", type=Path, help="本机工作台的前端构建目录")
     args = parser.parse_args()
+    if args.web_dir is not None and not (args.web_dir / "index.html").is_file():
+        parser.error("--web-dir 必须指向含 index.html 的前端构建目录")
     logger = obs.configure_logging(args.log_level, args.log_file, enable_file=not args.no_log_file)
     obs.install_crash_hooks(logger)
     store = core.ReviewStore(os.environ.get("CODELENS_REVIEW_DB") or core.DEFAULT_PATH)
     history = HistoryStore(os.environ.get("CODELENS_HISTORY_DB") or HISTORY_PATH)
-    uvicorn.run(create_app(store, history), host="127.0.0.1", port=args.port, access_log=False, proxy_headers=False)
+    uvicorn.run(create_app(store, history, web_dir=args.web_dir), host="127.0.0.1",
+                port=args.port, access_log=False, proxy_headers=False)
 
 
 if __name__ == "__main__":

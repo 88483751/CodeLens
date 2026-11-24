@@ -26,6 +26,8 @@ htmlcov/
 # ---- Node / 前端 ----
 node_modules/
 dist/
+dist-web/
+dist-sync/
 build/
 .next/
 *.tsbuildinfo

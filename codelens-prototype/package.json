@@ -9,6 +9,9 @@
     "test:coverage": "vitest run --coverage",
     "test:coverage:check": "vitest run --coverage --coverage.thresholds.lines=100",
     "build": "tsc --noEmit && vite build",
+    "build:web": "tsc --noEmit && vite build --mode browser --outDir dist-web",
+    "build:sync": "tsc --noEmit && vite build --mode browser-sync --outDir dist-sync",
+    "preview:web": "vite preview --outDir dist-web",
     "preview": "vite preview"
   },
   "dependencies": {
@@ -17,11 +20,13 @@
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.1.7",
+    "@types/node": "22.15.3",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
     "@vitejs/plugin-react": "^4.3.4",
     "@vitest/coverage-v8": "^5.1.0",
     "jsdom": "^26.1.0",
+    "pyodide": "0.27.7",
     "tailwindcss": "^4.1.7",
     "typescript": "~5.7.2",
     "vite": "^6.0.5",

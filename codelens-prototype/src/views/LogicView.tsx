@@ -1,4 +1,5 @@
 import { errorText, providerConfigured, readCachedReview, reviewProject } from '../api/client';
+import { browserMode } from '../api/browserMode';
 import { ReviewLimits } from '../components/ReviewLimits';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useApp, type Highlight } from '../state/AppState';
@@ -22,9 +23,9 @@ function LogicToolbar({ section, actions }: { section: LogicSection | undefined;
         variant="primary"
         icon="play"
         onClick={() => void actions.runAll()}
-        disabled={reviewBusy || Boolean(actions.active) || !actions.pending}
+        disabled={reviewBusy || Boolean(actions.active) || !actions.canRunAll}
       >
-        {actions.paused ? '继续解读' : '一键解读所有文件'}
+        {actions.paused ? '继续解读' : actions.pending ? '一键解读所有文件' : '继续项目审查'}
       </Button>
       <ReviewPause actions={actions} reviewBusy={reviewBusy} cancelReview={cancelReview} />
       {section ? (
@@ -210,7 +211,7 @@ function LogicWorkspace({ result }: { result: AnalyzeResult }) {
         <CardHeader
           title="AI 逻辑解读"
           icon="code"
-          subtitle="解读整个项目、当前文件或当前文件夹"
+          subtitle={browserMode ? '启动审查后，相关源码会直接发给所选的模型服务商' : '解读整个项目、当前文件或当前文件夹'}
           actions={
             <Button size="sm" variant="ghost" icon="settings" onClick={openSettings}>
               模型设置
@@ -219,7 +220,7 @@ function LogicWorkspace({ result }: { result: AnalyzeResult }) {
         />
         <LogicToolbar section={section} actions={actions} />
         <div ref={scrollRef} className="scroll-thin min-h-0 flex-1 overflow-auto px-4 py-3">
-          {reviewError && (reviewBusy || !actions.started) ? (
+          {reviewError && (reviewBusy || !actions.started || !actions.pending) ? (
             <div className="mb-3 max-w-[860px] rounded-[4px] border border-[#fecaca] bg-[#fef2f2] px-3 py-2 text-[11.5px] leading-relaxed text-danger" role="alert">
               {reviewError}
             </div>
@@ -267,46 +268,79 @@ function addFolderTargets(targets: Map<string, ReviewTarget>, source: ReviewTarg
   }
 }
 
+function useActiveReview() {
+  const [active, setActive] = useState('');
+  const [progress, setProgress] = useState<AiReviewProgress>();
+  const inFlight = useRef(new Map<ReviewTarget, AiReviewProgress | undefined>());
+
+  function showProgress() {
+    const first = inFlight.current.entries().next().value;
+    setActive(first?.[0].path ?? '');
+    setProgress(first?.[1]);
+  }
+
+  function clear() {
+    inFlight.current.clear();
+    showProgress();
+  }
+
+  async function track<T>(target: ReviewTarget, signal: AbortSignal,
+    run: (onProgress: (progress: AiReviewProgress) => void) => Promise<T>) {
+    inFlight.current.set(target, undefined);
+    showProgress();
+    try {
+      return await run((next) => {
+        if (signal.aborted) return;
+        inFlight.current.set(target, next);
+        showProgress();
+      });
+    } finally {
+      if (!signal.aborted) {
+        inFlight.current.delete(target);
+        showProgress();
+      }
+    }
+  }
+  return { active, progress, clear, track };
+}
+
 function useScopedReviews(result: AnalyzeResult) {
   const { token, settings, credentials, scopedReviews: reviews, saveScopedReview, useHistory,
-    openSettings, runReview } = useApp();
+    aiReview, openSettings, runReview } = useApp();
   const targets = useMemo(() => reviewTargets(result), [result]);
   const [error, setError] = useState('');
-  const [active, setActive] = useState('');
   const [paused, setPaused] = useState(false);
-  const [progress, setProgress] = useState<AiReviewProgress>();
+  const { active, progress, track, clear } = useActiveReview();
   const request = useRef<AbortController>();
 
   useEffect(() => {
-    setActive('');
+    clear();
     setError('');
     setPaused(false);
     return () => stopReview(request);
   }, [result]);
 
-
   function pause() {
     stopReview(request);
-    setActive('');
+    clear();
     setPaused(true);
   }
 
   async function generate(target: ReviewTarget, signal: AbortSignal) {
-    setActive(target.path);
-    setProgress(undefined);
-    const output = await reviewProject(scopedRequest(result, target, settings, useHistory, credentials.configured),
-      token, (next) => { if (!signal.aborted) setProgress(next); }, signal);
+    const input = scopedRequest(result, target, settings, useHistory, credentials.configured);
+    const output = await track(target, signal, (onProgress) => reviewProject(input, token, onProgress, signal));
     if (!signal.aborted) saveScopedReview(result, target.key, output);
   }
 
   async function run(queue: ReviewTarget[], generateProjectReview = false) {
-    if (request.current || !queue.length) return;
+    if (request.current || (!queue.length && !generateProjectReview)) return;
     if (!providerConfigured(settings, credentials.configured)) {
       openSettings();
       return;
     }
+    clear();
     await runScopedQueue({ queue, request, generate, generateProjectReview, runReview,
-      openSettings, setActive, setError, setPaused });
+      openSettings, clear, setError, setPaused });
   }
 
   const fileTargets = useMemo(
@@ -317,6 +351,7 @@ function useScopedReviews(result: AnalyzeResult) {
   return { reviews, error, active, progress, paused, pause, started: Boolean(active || error || paused || reviews.size),
     runSelected: (key: string) => run([...targets.values()].filter((target) => target.key === key)),
     completed: fileTargets.length - pendingFiles.length, pending: pendingFiles.length, total: fileTargets.length,
+    canRunAll: pendingFiles.length > 0 || (fileTargets.length > 0 && !aiReview),
     runAll: () => run(pendingFiles, true), targets };
 }
 
@@ -355,6 +390,7 @@ function scopedRequest(
   const scope = target.kind === 'folder' ? '文件夹' : '文件';
   return { project: result.project + ' · ' + scope + ' · ' + target.path,
     files: target.files, settings, scope: target.kind, history: result.history,
+    ...(browserMode && { analysis: result }),
     useHistory: result.history ? useHistory : undefined, useStoredCredential };
 }
 
@@ -365,26 +401,26 @@ interface ScopedQueueOptions {
   generateProjectReview: boolean;
   runReview: () => Promise<void>;
   openSettings: () => void;
-  setActive: (value: string) => void;
+  clear: () => void;
   setError: (value: string) => void;
   setPaused: (value: boolean) => void;
 }
 
 async function runScopedQueue(options: ScopedQueueOptions) {
   const { queue, request, generate, generateProjectReview, runReview,
-    openSettings, setActive, setError, setPaused } = options;
+    openSettings, clear, setError, setPaused } = options;
   const controller = new AbortController();
   request.current = controller;
   setPaused(false);
   setError('');
-  const outcome = await runQueue(queue, controller.signal, generate).then(
-    (failed) => ({ failed, error: undefined }),
-    (error: unknown) => ({ failed: [], error }),
-  );
-  if (controller.signal.aborted) return finishScopedQueue(request, controller, setActive);
-  reportScopedOutcome(outcome, openSettings, setError);
-  if (generateProjectReview) await runReview();
-  finishScopedQueue(request, controller, setActive);
+  try {
+    const outcome = await runQueue(queue, controller, generate);
+    if (request.current !== controller) return;
+    reportScopedOutcome(outcome, openSettings, setError);
+    if (generateProjectReview && !outcome.failed.length && !controller.signal.aborted) await runReview();
+  } finally {
+    finishScopedQueue(request, controller, clear);
+  }
 }
 
 function reportScopedOutcome(
@@ -404,28 +440,35 @@ function reportScopedOutcome(
 function finishScopedQueue(
   request: { current: AbortController | undefined },
   controller: AbortController,
-  setActive: (value: string) => void,
+  clear: () => void,
 ) {
   if (request.current !== controller) return;
   request.current = undefined;
-  setActive('');
+  clear();
 }
 
-async function runQueue(queue: ReviewTarget[], signal: AbortSignal,
+async function runQueue(queue: ReviewTarget[], controller: AbortController,
   generate: (target: ReviewTarget, signal: AbortSignal) => Promise<void>) {
   const failed: string[] = [];
+  let error: unknown;
+  const { signal } = controller;
   let next = 0;
   async function worker() {
     while (!signal.aborted) {
       const target = queue[next];
       next += 1;
       if (!target) return;
-      const failure = await tryGenerate(target, signal, generate);
-      if (failure) failed.push(failure);
+      try {
+        const failure = await tryGenerate(target, signal, generate);
+        if (failure) failed.push(failure);
+      } catch (failure) {
+        error = failure;
+        controller.abort();
+      }
     }
   }
   await Promise.all(Array.from({ length: Math.min(3, queue.length) }, () => worker()));
-  return failed;
+  return { failed, error };
 }
 
 async function tryGenerate(target: ReviewTarget, signal: AbortSignal,
@@ -435,7 +478,7 @@ async function tryGenerate(target: ReviewTarget, signal: AbortSignal,
   } catch (failure) {
     if (signal.aborted) return;
     const message = errorText(failure, '解读失败，请检查模型设置后重试。');
-    if (!/连接(?:失败|中断)|超时/.test(message)) throw failure;
+    if (/HTTP\s*(401|403)|authentication|unauthorized|invalid api key/i.test(message)) throw failure;
     return target.path + ' — ' + message;
   }
 }

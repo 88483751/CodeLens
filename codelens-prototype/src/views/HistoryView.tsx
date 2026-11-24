@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { deleteHistory, errorText, historyDetail, historyProjects } from '../api/client';
+import { syncMode } from '../api/browserMode';
 import { useApp } from '../state/AppState';
 import type { HistoricalIssue, HistoryProject } from '../types';
 
@@ -97,11 +98,11 @@ function useHistoryView() {
     }
   }
   return { enabled, go, projects: projects.data, opening,
-    error: projects.error, open, remove };
+    error: projects.error, open, remove, reload: () => setRefresh((value) => value + 1) };
 }
 
 export function HistoryView() {
-  const { enabled, go, projects, opening, error, open, remove } = useHistoryView();
+  const { enabled, go, projects, opening, error, open, remove, reload } = useHistoryView();
   return (
     <div className="h-full overflow-auto rounded-md border border-line bg-card p-4 text-sm">
       <div className="flex items-center justify-between">
@@ -109,7 +110,10 @@ export function HistoryView() {
           <h1 className="serif text-lg font-semibold">分析历史</h1>
           <p className="mt-0.5 text-[11px] text-muted">每次导入分析都会单独保存；点击记录直接打开当时的结果。</p>
         </div>
-        <button type="button" className="text-primary hover:underline" onClick={() => go('overview')}>返回工作台</button>
+        <div className="flex gap-3">
+          {syncMode && <button type="button" className="text-primary hover:underline" onClick={reload}>刷新历史</button>}
+          <button type="button" className="text-primary hover:underline" onClick={() => go('overview')}>返回工作台</button>
+        </div>
       </div>
       {!enabled && <p className="mt-4 text-muted">连接支持分析历史的本机服务后查看。</p>}
       {error && <p className="mt-4 text-danger" role="alert">{error}</p>}

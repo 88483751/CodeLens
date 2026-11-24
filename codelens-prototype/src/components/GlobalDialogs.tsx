@@ -20,7 +20,7 @@ export function SourceDialog() {
         </Button>
       }
     >
-      {!target || !file ? (
+      {!target || typeof file?.source !== 'string' ? (
         <p className="text-[12px] text-muted">分析结果中没有该文件的源码。</p>
       ) : (
         <>
