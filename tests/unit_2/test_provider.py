@@ -43,7 +43,7 @@ class ModelProviderTests(unittest.TestCase):
     def test_http_provider_sends_request_and_adds_provenance(self):
         message = {"claims": [], "outputs": {"headline": "示例"}}
         envelope = {"choices": [{"message": {"content": json.dumps(message)}}]}
-        with patch("ai.provider.urllib.request.urlopen",
+        with patch("ai.provider._open_model_request",
                    return_value=io.BytesIO(json.dumps(envelope).encode())) as open_url:
             raw, diagnostics = self.http.produce(self.skill, self.ctx)
 
@@ -62,13 +62,21 @@ class ModelProviderTests(unittest.TestCase):
 
     def test_http_provider_reports_malformed_responses(self):
         for body in (b"invalid JSON", b"{}", b'{"choices": []}'):
-            with self.subTest(body=body), patch("ai.provider.urllib.request.urlopen",
+            with self.subTest(body=body), patch("ai.provider._open_model_request",
                                                return_value=io.BytesIO(body)):
                 with self.assertRaises(provider.ProviderError):
                     self.http.produce(self.skill, self.ctx)
 
+    def test_transport_installs_no_redirect_handler(self):
+        with patch.object(provider.urllib.request, "build_opener") as build:
+            request = provider.urllib.request.Request(self.endpoint)
+            provider._open_model_request(request, 3)
+        handler, = build.call_args.args
+        self.assertIsNone(handler.redirect_request(request, None, 302, "", {}, self.endpoint))
+        build.return_value.open.assert_called_once_with(request, timeout=3)
+
     def test_incomplete_configuration_fails_before_network_request(self):
-        with patch.dict(os.environ, clear=True), patch("ai.provider.urllib.request.urlopen") as open_url:
+        with patch.dict(os.environ, clear=True), patch("ai.provider._open_model_request") as open_url:
             incomplete = provider.HttpProvider(self.endpoint, "unit-model")
             self.assertFalse(incomplete.available())
             with self.assertRaises(provider.ProviderError):
@@ -82,7 +90,7 @@ class ModelProviderTests(unittest.TestCase):
         env = runner.build_env(build_index(result))
         env["ensure_trees"]()
         service = runner.Runner(env, provider=self.http, cache=runner.Cache())
-        with patch("ai.provider.urllib.request.urlopen", side_effect=URLError("offline")) as open_url:
+        with patch("ai.provider._open_model_request", side_effect=URLError("offline")) as open_url:
             outcome = service.run(["logic-summary"], targets=[self.ctx["ref"]])
 
         open_url.assert_called_once()

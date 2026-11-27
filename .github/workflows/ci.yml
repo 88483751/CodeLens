@@ -14,6 +14,16 @@ jobs:
   analysis-check:
     name: 本地分析与工作台测试
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: codelens_test
+          POSTGRES_USER: codelens_test
+          POSTGRES_PASSWORD: codelens_test
+        ports:
+          - 5432/tcp
+        options: --health-cmd "pg_isready -U codelens_test -d codelens_test" --health-interval 5s --health-timeout 5s --health-retries 10
     strategy:
       matrix:
         python-version: ['3.11', '3.13']
@@ -26,6 +36,8 @@ jobs:
         with:
           node-version: '22'
       - name: Python 单元测试与本机接口回归
+        env:
+          CODELENS_TEST_POSTGRES_DSN: postgresql://codelens_test:codelens_test@127.0.0.1:${{ job.services.postgres.ports[5432] }}/codelens_test
         run: |
           python -m pip install -r doc/requirements-test.txt
           python -B -m coverage run --rcfile=doc/.coveragerc -m unittest discover -s tests/unit_1 -v

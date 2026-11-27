@@ -10,7 +10,7 @@ try {
     Copy-Item -LiteralPath (Join-Path $root 'codelens-prototype/dist-sync') -Destination (Join-Path $stage 'site') -Recurse
     $server = Join-Path $stage 'server'
     New-Item -ItemType Directory $server | Out-Null
-    foreach ($name in 'Dockerfile', 'requirements.txt', 'service.py', 'codelens-history.service', 'nginx-tls.conf', 'README.md') {
+    foreach ($name in 'Dockerfile', 'requirements.txt', 'service.py', 'codelens-history.service', 'nginx-tls.conf', 'prepare-postgres.sh', 'README.md') {
         Copy-Item -LiteralPath (Join-Path $PSScriptRoot $name) -Destination $server
     }
     $artifact = Join-Path $output 'codelens-sync.tar.gz'

@@ -1,2 +1,3 @@
 -r ../requirements-backend.txt
+-r ../deploy/sync/requirements.txt
 coverage==7.17.2

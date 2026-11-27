@@ -1,5 +1,6 @@
 """Start the downloaded CodeLens workbench on the user's computer."""
 
+import argparse
 import hashlib
 import os
 from pathlib import Path
@@ -31,8 +32,13 @@ def prepare_python(data, requirements):
 
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--migrate-sqlite", action="store_true", help="导入旧版本机历史和审查检查点")
+    args = parser.parse_args()
     if sys.version_info < (3, 11):
         raise SystemExit("请安装 Python 3.11 或以上版本。")
+    if not os.environ.get("CODELENS_LOCAL_DATABASE_URL"):
+        raise SystemExit("请先设置 CODELENS_LOCAL_DATABASE_URL，指向本机版的 PostgreSQL 数据库。")
     root = Path(__file__).resolve().parent
     web = root / "codelens-prototype" / "dist"
     if not (web / "index.html").is_file():
@@ -40,12 +46,13 @@ def main():
     data = user_data_dir()
     data.mkdir(parents=True, exist_ok=True)
     python = prepare_python(data, root / "requirements-backend.txt")
-    env = {**os.environ, "CODELENS_HISTORY_DB": str(data / "history.sqlite3"),
-           "CODELENS_REVIEW_DB": str(data / "review.sqlite3")}
+    if args.migrate_sqlite:
+        return subprocess.call([str(python), "-B", str(root / "code" / "backend" / "migrate_local_sqlite.py"),
+                                "--data-dir", str(data)], cwd=root)
     print("请在浏览器打开 http://127.0.0.1:18766/ ，使用期间保持此窗口打开。", flush=True)
     return subprocess.call([str(python), "-B", str(root / "code" / "backend" / "asgi.py"),
                             "--web-dir", str(web), "--log-file", str(data / "codelens.log")],
-                           env=env, cwd=root)
+                           cwd=root)
 
 
 if __name__ == "__main__":

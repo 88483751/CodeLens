@@ -22,9 +22,11 @@ from ai import provider as ai_provider
 from ai import runner as ai_runner
 from ai import skills as ai_skills
 from ai import explanation
-from ai.review_store import DEFAULT_PATH, ReviewStore
+from ai.review_store import ReviewStore
+from ai.source_policy import require_source_consent, shareable_path
 from backend import credentials as secure
 from backend import observability as obs
+from backend.local_database import start_database
 
 # 18766 只提供 JSON API；界面是独立的 codelens-prototype（Vite，5173）。
 TOKEN = secrets.token_urlsafe(32)
@@ -159,7 +161,11 @@ def ai_analyze(payload):
         raise ai_contract.SkillError("refused", "options 必须是对象")
     include_text = options.get("include_text", True) is not False
 
-    result = analyze({"project": payload.get("project"), "files": payload.get("files") or []})
+    provider, degraded = ai_provider.resolve_provider(allow_http=options.get("source_consent") is True)
+    files = payload.get("files") or []
+    if provider.kind == "http":
+        files = _external_skill_files(files)
+    result = analyze({"project": payload.get("project"), "files": files})
     if result.get("status") in ("empty", "failed"):
         return _empty_ai_result(result)
 
@@ -168,7 +174,6 @@ def ai_analyze(payload):
     index = build_index(merged)
     env = ai_runner.build_env(index, rules=extra)
     env["ensure_trees"]()
-    provider, degraded = ai_provider.resolve_provider()
     outcome = ai_runner.Runner(env, provider=provider).run(skills, targets=targets)
 
     results = _ai_results(outcome, include_text)
@@ -186,6 +191,13 @@ def ai_analyze(payload):
 
 
 # 界面资源由 codelens-prototype 在 5173 提供，本服务不再托管静态文件。
+
+def _external_skill_files(files):
+    if not isinstance(files, list):
+        return files
+    return [item for item in files if isinstance(item, dict) and isinstance(item.get("path"), str)
+            and shareable_path(item["path"])]
+
 
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *_):
@@ -388,9 +400,11 @@ class Handler(BaseHTTPRequestHandler):
 
     def _route_post(self, path, payload):
         if path == obs.API_EXPLAIN:
+            require_source_consent(payload)
             payload = secure.with_stored_api_key(payload, secure.CREDENTIALS)
             return self.send_data(200, explanation.explain(payload))
         if path == obs.API_REVIEW:
+            require_source_consent(payload)
             return self.stream_review(payload)
         if path == obs.API_REVIEW_CACHED:
             payload = secure.with_stored_api_key(payload, secure.CREDENTIALS)
@@ -429,13 +443,14 @@ def main():
     logger = obs.configure_logging(args.log_level, args.log_file,
                                    enable_file=not args.no_log_file)
     obs.install_crash_hooks(logger)
+    dsn = start_database()
     try:
         server = ThreadingHTTPServer(("127.0.0.1",args.port),Handler)
     except OSError as exc:
         obs.log_event(logger, logging.ERROR, "startup_failed", port=args.port,
                       type=type(exc).__name__)
         raise SystemExit(f"无法启动端口 {args.port}，可使用 --port 更换端口：{exc}")
-    server.review_store = ReviewStore(os.environ.get("CODELENS_REVIEW_DB") or DEFAULT_PATH)
+    server.review_store = ReviewStore(dsn)
     print(f"CodeLens {VERSION} API: http://127.0.0.1:{server.server_port} (JSON only)",flush=True)
     print("Open the UI at http://localhost:5173 (see README). Ctrl+C to stop.",flush=True)
     active = obs.active_log_file()

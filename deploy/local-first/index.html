@@ -12,7 +12,7 @@
     <p><a href="codelens-local.zip" download>下载 CodeLens</a></p>
     <ol>
       <li>安装 Python 3.11 或以上版本，并完整解压下载的 ZIP。</li>
-      <li>在解压目录打开终端。Windows 运行 <code>py -3 start-local.py</code>，macOS 或 Linux 运行 <code>python3 start-local.py</code>。</li>
+      <li>在解压目录打开终端并设置 <code>CODELENS_LOCAL_DATABASE_URL</code>，指向本机 PostgreSQL 数据库。Windows 运行 <code>py -3 start-local.py</code>，macOS 或 Linux 运行 <code>python3 start-local.py</code>。</li>
       <li>依赖安装完成后，在浏览器打开 <a href="http://127.0.0.1:18766/">本机工作台</a>。</li>
     </ol>
     <p>项目、历史记录和模型设置保存在你的设备上。启用 AI 审查时，本机工作台会将所需源码直接发送到你配置的模型服务。</p>

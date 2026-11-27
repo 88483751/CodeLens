@@ -6,6 +6,8 @@
 
 单元测试模拟外部模型和网络请求。实际本机 HTTP 集成测试位于 [tests/integration](../tests/integration/)。
 
+本机历史、审查检查点、SQLite 迁移和网页历史同步测试使用 PostgreSQL。将 `CODELENS_TEST_POSTGRES_DSN` 指向专用测试数据库后运行 `python -B -m unittest discover -s tests/unit_2 -v`。测试会创建并清理临时 schema。GitHub Actions 提供 PostgreSQL 16。
+
 [复杂度回归测试](../tests/unit_2/test_project_complexity.py) 随 Python 单元测试运行，复扫后端、前端和 DDD 设计示例。每个函数的圈复杂度、有效行数和嵌套深度分别不得超过 8、50 和 4。
 
 ## 运行和查看覆盖率

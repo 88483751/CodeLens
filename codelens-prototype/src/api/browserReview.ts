@@ -3,6 +3,7 @@ import { syncMode } from './browserMode';
 import { syncCheckpoint, syncReadCheckpoint, syncReview } from './historySync';
 import prompts from '../../../code/ai/review_prompts.json';
 import { sectionPrompt, selectReviewFacts, type ReviewScope as Scope } from './browserReviewPrompt';
+import { redactModelText, shareableSourcePath, sourceConsentMessage } from './sourcePolicy';
 import type {
   AiReviewProgress, AiReviewResult, AiReviewSection, AiReviewSectionId, ExplainCitation,
   ExplainResult, LlmSettings, ScopedReviewResult,
@@ -89,7 +90,7 @@ async function complete(settings: LlmSettings, system: string, prompt: string, m
         model: settings.model, max_tokens: maxTokens, stream: false,
         messages: [
           { role: 'system', content: system },
-          { role: 'user', content: prompt },
+          { role: 'user', content: redactModelText(prompt, key) },
         ],
       }),
     });
@@ -113,11 +114,9 @@ function parseReviewSection(value: Completion, section: AiReviewSectionId): Comp
   try {
     parsed = JSON.parse(text);
   } catch {
-    const start = text.indexOf('{');
-    const end = text.lastIndexOf('}');
-    if (start < 0 || end <= start) throw new InvalidReviewFormat(limited);
+    const object = text.slice(text.indexOf('{'), text.lastIndexOf('}') + 1);
     try {
-      parsed = JSON.parse(text.slice(start, end + 1));
+      parsed = JSON.parse(object);
     } catch {
       throw new InvalidReviewFormat(limited);
     }
@@ -148,10 +147,9 @@ async function completeWithRetry(
   }
 }
 
-function sourceParts(files: Sources): Part[] {
+function sourceParts(files: Sources, key: string): Part[] {
   return files.flatMap(({ path, content }) => {
-    const lines = content.split(/\r?\n/);
-    if (lines.length > 1 && lines.at(-1) === '') lines.pop();
+    const lines = redactModelText(content, key).replace(/\r?\n$/, '').split(/\r?\n/);
     const parts: Part[] = [];
     const limit = Math.max(800, sourceBudget - path.length - 100);
     const pieceLimit = limit - 16;
@@ -214,7 +212,7 @@ async function reviewKey(request: ReviewRequest, scope: Scope, signal: AbortSign
   signal.throwIfAborted();
   if (!crypto.subtle) return null;
   const facts = selectReviewFacts(request, reviewFields(scope));
-  const input = JSON.stringify(['browser-review-v2', request.project, request.settings.baseUrl,
+  const input = JSON.stringify(['browser-review-v3-source-policy', request.project, request.settings.baseUrl,
     request.settings.model, scope, request.files, facts]);
   const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(input));
   const hash = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
@@ -284,7 +282,7 @@ async function gatherNotes(
 export async function browserCachedReview(
   request: ReviewRequest & { scope: ScopedReviewResult['scope'] }, signal: AbortSignal,
 ) {
-  const key = await reviewKey(request, request.scope, signal);
+  const key = await reviewKey(shareableRequest(request), request.scope, signal);
   const result = key ? await readCheckpoint<ScopedReviewResult>(key + '/result', signal) : undefined;
   return result ?? null;
 }
@@ -330,7 +328,8 @@ async function generateReview(
   request: ReviewRequest, scope: Scope, run: ReturnType<typeof checkpointRunner>, progress: Progress,
 ): Promise<ReviewResult> {
   if (!request.files.length) throw new Error('没有可供审查的源码。');
-  const parts = sourceParts(request.files);
+  const key = request.settings.apiKey.trim() || browserApiKey(browserModelUrl(request.settings.baseUrl).origin);
+  const parts = sourceParts(request.files, key);
   const batches = groups(parts, (part) => part.path.length + part.text.length + 100, sourceBudget);
   const context = parts.map((part) => ({ file: part.path, line: part.line, end_line: part.endLine }));
   const { output, limited, summary, factsOmitted } = await generateSections(request, scope, batches, context, run, progress);
@@ -360,6 +359,8 @@ async function performReview(
 export async function browserReview(
   request: ReviewRequest & { scope?: ScopedReviewResult['scope'] }, progress: Progress, signal: AbortSignal,
 ): Promise<ReviewResult> {
+  if (request.sourceConsent !== true) throw new Error(sourceConsentMessage);
+  request = shareableRequest(request);
   const scope = request.scope ?? 'project';
   const id = scope === 'project' ? request.history?.analysis_id : undefined;
   const key = await reviewKey(request, scope, signal);
@@ -374,12 +375,18 @@ export async function browserReview(
   }
 }
 
+function shareableRequest<T extends ReviewRequest>(request: T): T {
+  return { ...request, files: request.files.filter((file) => shareableSourcePath(file.path)) };
+}
+
 export async function browserExplain(request: ExplainRequest, signal: AbortSignal): Promise<ExplainResult> {
   const { target, files, settings } = request;
+  if (target.function) throw new Error('浏览器兼容接口无法校验单函数范围，请选择文件级解读后重新确认。');
   const scope = target.scope ?? 'file';
   const selected = scope === 'project' ? files : files.filter((file) => file.path === target.file);
   const result = await browserReview({
-    project: request.project, files: selected, settings, scope: scope === 'file' ? scope : undefined,
+    project: request.project, files: selected, settings, sourceConsent: request.sourceConsent,
+    scope: scope === 'file' ? scope : undefined,
   }, () => {}, signal);
   const logic = result.sections.logic;
   return {

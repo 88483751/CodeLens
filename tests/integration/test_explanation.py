@@ -49,17 +49,17 @@ class ExplanationTests(unittest.TestCase):
         self.model.requests = []
         self.model.status = 200
         self.model.response = {'choices': [{'message': {'content': '先检查输入，再返回计算结果（第 2–3 行）。'}, 'finish_reason': 'stop'}]}
-        self.payload = {'project': 'demo', 'files': [{'path': 'a.py', 'content': 'def f(x):\n    if x:\n        return x + 1\n\ndef unrelated():\n    return "UNRELATED_SOURCE"\n'}],
+        self.payload = {'source_consent': True, 'project': 'demo', 'files': [{'path': 'a.py', 'content': 'def f(x):\n    if x:\n        return x + 1\n\ndef unrelated():\n    return "UNRELATED_SOURCE"\n'}],
                         'target': {'file': 'a.py', 'function': 'a.f'},
                         'provider': {'base_url': f'http://127.0.0.1:{self.model.server_port}/v1', 'model': 'test-model', 'api_key': 'private-test-key'}}
 
-    def post(self, payload=None, token=None):
-        request = urllib.request.Request(self.origin + '/api/explain', data=json.dumps(self.payload if payload is None else payload).encode(),
+    def post(self, payload=None, token=None, route='/api/explain'):
+        request = urllib.request.Request(self.origin + route, data=json.dumps(self.payload if payload is None else payload).encode(),
                                          headers={'Content-Type': 'application/json', 'Origin': self.origin,
                                                   'X-CodeLens-Token': token or self.token})
         try:
             with urllib.request.urlopen(request, timeout=10) as response:
-                return response.status, json.load(response)
+                return response.status, json.loads(response.read().splitlines()[-1])
         except urllib.error.HTTPError as exc:
             with exc:
                 return exc.code, json.load(exc)
@@ -80,6 +80,38 @@ class ExplanationTests(unittest.TestCase):
         self.payload['target']['function'] = None
         self.assertEqual(self.post()[0], 200)
         self.assertIn('UNRELATED_SOURCE', self.model.requests[0][1]['messages'][1]['content'])
+
+    def test_source_consent_and_outbound_redaction(self):
+        for consent in (None, False, "true"):
+            self.assertEqual(self.post({**self.payload, 'source_consent': consent})[0], 400)
+        self.assertFalse(self.model.requests)
+        self.payload['target']['function'] = None
+        self.payload['files'][0]['content'] = (
+            'DB_PASSWORD = "example-secret-value"\n# C:/Users/demo/private.py\n'
+            '# private-test-key\nprint(42)\n'
+        )
+        self.assertEqual(self.post()[0], 200)
+        _, body, authorization = self.model.requests[0]
+        self.assertEqual(authorization, 'Bearer private-test-key')
+        self.assertNotRegex(json.dumps(body), r'example-secret-value|C:/Users|private-test-key')
+        self.assertIn('4: print(42)', body['messages'][1]['content'])
+
+    def test_review_filters_sensitive_files_and_masks_secrets_before_batching(self):
+        self.model.response['choices'][0]['message']['content'] = '{"logic":"示例 [a.py:L6]"}'
+        payload = {**self.payload, 'scope': 'file', 'files': [
+            {'path': 'a.py', 'content': '\n'.join([
+                'TOKEN = "synthetic-secret"', '# /home/example/private/project',
+                '# -----BEGIN PRIVATE KEY-----', '# SYNTHETIC_PRIVATE_DATA',
+                '# -----END PRIVATE KEY-----', 'print(42)',
+            ])},
+            {'path': 'credentials/hidden.py', 'content': 'print("FORBIDDEN_FILE_MARKER")'},
+        ]}
+        status, event = self.post(payload, route='/api/review')
+        self.assertEqual((status, event['type']), (200, 'result'))
+        self.assertEqual([item['file'] for item in event['result']['context']], ['a.py'])
+        prompt = self.model.requests[0][1]['messages'][1]['content']
+        self.assertNotRegex(prompt, r'synthetic-secret|/home/example|SYNTHETIC_PRIVATE_DATA|FORBIDDEN_FILE_MARKER')
+        self.assertIn('6: print(42)', prompt)
 
     def test_full_endpoint_does_not_duplicate_suffix(self):
         self.payload['provider']['base_url'] += '/chat/completions/'

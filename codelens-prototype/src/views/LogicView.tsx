@@ -1,5 +1,6 @@
 import { errorText, providerConfigured, readCachedReview, reviewProject } from '../api/client';
 import { browserMode } from '../api/browserMode';
+import { confirmSourceSend, shareableSourcePath } from '../api/sourcePolicy';
 import { ReviewLimits } from '../components/ReviewLimits';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useApp, type Highlight } from '../state/AppState';
@@ -211,7 +212,7 @@ function LogicWorkspace({ result }: { result: AnalyzeResult }) {
         <CardHeader
           title="AI 逻辑解读"
           icon="code"
-          subtitle={browserMode ? '启动审查后，相关源码会直接发给所选的模型服务商' : '解读整个项目、当前文件或当前文件夹'}
+          subtitle="确认后向所选模型服务发送处理过的源码片段"
           actions={
             <Button size="sm" variant="ghost" icon="settings" onClick={openSettings}>
               模型设置
@@ -247,7 +248,7 @@ function reviewKey(kind: ReviewTarget['kind'], path: string) {
 function reviewTargets(result: AnalyzeResult) {
   const targets = new Map<string, ReviewTarget>();
   for (const file of result.files) {
-    if (file.status !== 'ok' || typeof file.source !== 'string') continue;
+    if (file.status !== 'ok' || typeof file.source !== 'string' || !shareableSourcePath(file.path)) continue;
     const source = { path: file.path, content: file.source };
     const key = reviewKey('file', file.path);
     targets.set(key, { key, path: file.path, kind: 'file', files: [source] });
@@ -327,7 +328,7 @@ function useScopedReviews(result: AnalyzeResult) {
   }
 
   async function generate(target: ReviewTarget, signal: AbortSignal) {
-    const input = scopedRequest(result, target, settings, useHistory, credentials.configured);
+    const input = { ...scopedRequest(result, target, settings, useHistory, credentials.configured), sourceConsent: true };
     const output = await track(target, signal, (onProgress) => reviewProject(input, token, onProgress, signal));
     if (!signal.aborted) saveScopedReview(result, target.key, output);
   }
@@ -338,6 +339,8 @@ function useScopedReviews(result: AnalyzeResult) {
       openSettings();
       return;
     }
+    const paths = queue.flatMap((target) => target.files.map((file) => file.path));
+    if (paths.length && !confirmSourceSend(settings, paths, generateProjectReview ? '批量文件解读' : '所选文件或目录')) return;
     clear();
     await runScopedQueue({ queue, request, generate, generateProjectReview, runReview,
       openSettings, clear, setError, setPaused });

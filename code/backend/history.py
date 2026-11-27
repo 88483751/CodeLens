@@ -1,38 +1,12 @@
 """Local project snapshots, comparable findings and bounded review memory."""
-from contextlib import closing, contextmanager
 from hashlib import sha256
 import json
-from pathlib import Path
-import sqlite3
 from uuid import uuid4
 
+from backend.local_database import connect
 
-DEFAULT_PATH = Path(__file__).resolve().parents[2] / "data" / "history.sqlite3"
 MEMORY_BYTES = 1000
 MEMORY_ITEMS = 5
-
-_SCHEMA = """
-CREATE TABLE IF NOT EXISTS project (
-    id TEXT PRIMARY KEY, name TEXT NOT NULL, created TEXT DEFAULT CURRENT_TIMESTAMP
-);
-CREATE TABLE IF NOT EXISTS version (
-    project_id TEXT REFERENCES project(id) ON DELETE CASCADE,
-    digest TEXT, files TEXT NOT NULL, PRIMARY KEY(project_id, digest)
-);
-CREATE TABLE IF NOT EXISTS analysis (
-    id INTEGER PRIMARY KEY AUTOINCREMENT, project_id TEXT NOT NULL,
-    version TEXT NOT NULL, created TEXT DEFAULT CURRENT_TIMESTAMP,
-    report TEXT NOT NULL, changes TEXT NOT NULL, issues TEXT NOT NULL,
-    ai TEXT, ai_status TEXT NOT NULL DEFAULT 'not_run',
-    FOREIGN KEY(project_id, version) REFERENCES version(project_id, digest) ON DELETE CASCADE
-);
-CREATE INDEX IF NOT EXISTS analysis_project ON analysis(project_id, id);
-CREATE TABLE IF NOT EXISTS project_checkpoint (
-    project_id TEXT REFERENCES project(id) ON DELETE CASCADE,
-    fingerprint TEXT, data TEXT NOT NULL, updated REAL NOT NULL,
-    PRIMARY KEY(project_id, fingerprint)
-);
-"""
 
 
 def _json(value):
@@ -149,19 +123,11 @@ def memory_prompt(memory, prompt, *, total_budget=24000):
 
 
 class HistoryStore:
-    def __init__(self, path=DEFAULT_PATH):
-        self.path = Path(path)
+    def __init__(self, dsn):
+        self.dsn = dsn
 
-    @contextmanager
     def _db(self, write=False):
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        with closing(sqlite3.connect(self.path)) as db, db:
-            db.row_factory = sqlite3.Row
-            db.execute("PRAGMA foreign_keys = ON")
-            db.executescript(_SCHEMA)
-            if write:
-                db.execute("BEGIN IMMEDIATE")
-            yield db
+        return connect(self.dsn, write=write)
 
     def projects(self):
         with self._db() as db:
@@ -175,17 +141,17 @@ class HistoryStore:
     def runs(self, project_id):
         with self._db() as db:
             return [dict(row) for row in db.execute("""
-                SELECT id, version, created, ai_status FROM analysis WHERE project_id = ? ORDER BY id DESC
+                SELECT id, version, created, ai_status FROM analysis WHERE project_id = %s ORDER BY id DESC
             """, (project_id,))]
 
     def delete(self, project_id, analysis_id=None):
         with self._db(write=True) as db:
             if analysis_id is None:
-                db.execute("DELETE FROM project WHERE id = ?", (project_id,))
+                db.execute("DELETE FROM project WHERE id = %s", (project_id,))
                 return
-            db.execute("DELETE FROM analysis WHERE project_id = ? AND id = ?", (project_id, analysis_id))
-            db.execute("""DELETE FROM project WHERE id = ?
-                          AND NOT EXISTS (SELECT 1 FROM analysis WHERE project_id = ?)""",
+            db.execute("DELETE FROM analysis WHERE project_id = %s AND id = %s", (project_id, analysis_id))
+            db.execute("""DELETE FROM project WHERE id = %s
+                          AND NOT EXISTS (SELECT 1 FROM analysis WHERE project_id = %s)""",
                        (project_id, project_id))
 
     def checkpoints(self, project_id):
@@ -194,8 +160,8 @@ class HistoryStore:
     def _project(self, db, project_id, name):
         if not project_id:
             project_id = uuid4().hex
-            db.execute("INSERT INTO project (id, name) VALUES (?, ?)", (project_id, name))
-        if not db.execute("SELECT 1 FROM project WHERE id = ?", (project_id,)).fetchone():
+            db.execute("INSERT INTO project (id, name) VALUES (%s, %s)", (project_id, name))
+        if not db.execute("SELECT 1 FROM project WHERE id = %s", (project_id,)).fetchone():
             raise ValueError("项目历史不存在，请重新选择项目")
         return project_id
 
@@ -204,13 +170,15 @@ class HistoryStore:
         digest = sha256(_json({path: file["hash"] for path, file in manifest.items()}).encode()).hexdigest()
         with self._db(write=True) as db:
             project_id = self._project(db, project_id, result["project"])
-            before = db.execute("SELECT * FROM analysis WHERE project_id = ? ORDER BY id DESC LIMIT 1",
+            before = db.execute("SELECT * FROM analysis WHERE project_id = %s ORDER BY id DESC LIMIT 1",
                                 (project_id,)).fetchone()
-            db.execute("INSERT OR IGNORE INTO version VALUES (?, ?, ?)", (project_id, digest, _json(manifest)))
-            run = db.execute("INSERT INTO analysis (project_id, version, report, changes, issues) VALUES (?, ?, ?, '{}', '{}')",
-                             (project_id, digest, _json(_archive(result)))).lastrowid
+            db.execute("INSERT INTO version VALUES (%s, %s, %s) ON CONFLICT DO NOTHING",
+                       (project_id, digest, _json(manifest)))
+            run = db.execute("""INSERT INTO analysis (project_id, version, report, changes, issues)
+                                VALUES (%s, %s, %s, '{}', '{}') RETURNING id""",
+                             (project_id, digest, _json(_archive(result)))).fetchone()["id"]
             changes, issues = self._compare(result, before, manifest, digest, run)
-            db.execute("UPDATE analysis SET changes = ?, issues = ? WHERE id = ?",
+            db.execute("UPDATE analysis SET changes = %s, issues = %s WHERE id = %s",
                        (_json(changes), _json(issues), run))
         return {"project_id": project_id, "analysis_id": run, "recurring": _recurring(issues)}
 
@@ -225,7 +193,7 @@ class HistoryStore:
         return changes, issues
 
     def _run(self, db, project_id, run):
-        row = db.execute("SELECT * FROM analysis WHERE project_id = ? AND id = ?", (project_id, run)).fetchone()
+        row = db.execute("SELECT * FROM analysis WHERE project_id = %s AND id = %s", (project_id, run)).fetchone()
         if row is None:
             raise ValueError("分析记录不存在")
         return row
@@ -249,8 +217,8 @@ class HistoryStore:
 
     def save_review(self, project_id, run, status, review=None):
         with self._db(write=True) as db:
-            db.execute("""UPDATE analysis SET ai_status = ?, ai = COALESCE(?, ai)
-                          WHERE project_id = ? AND id = ? AND (ai IS NULL OR ? = 'done')""",
+            db.execute("""UPDATE analysis SET ai_status = %s, ai = COALESCE(%s, ai)
+                          WHERE project_id = %s AND id = %s AND (ai IS NULL OR %s = 'done')""",
                        (status, _json(review) if review else None, project_id, run, status))
 
 
@@ -273,16 +241,18 @@ class ProjectCheckpoints:
 
     def load(self, fingerprint):
         with self.history._db() as db:
-            row = db.execute("SELECT data FROM project_checkpoint WHERE project_id = ? AND fingerprint = ?",
+            row = db.execute("SELECT data FROM project_checkpoint WHERE project_id = %s AND fingerprint = %s",
                              (self.project_id, fingerprint)).fetchone()
         return json.loads(row["data"]) if row else None
 
     def save(self, fingerprint, checkpoint, updated):
         with self.history._db(write=True) as db:
-            db.execute("""INSERT OR REPLACE INTO project_checkpoint
-                          SELECT id, ?, ?, ? FROM project WHERE id = ?""",
+            db.execute("""INSERT INTO project_checkpoint
+                          SELECT id, %s, %s, %s FROM project WHERE id = %s
+                          ON CONFLICT (project_id, fingerprint) DO UPDATE
+                          SET data = excluded.data, updated = excluded.updated""",
                        (fingerprint, _json(checkpoint), updated, self.project_id))
-            db.execute("""DELETE FROM project_checkpoint WHERE project_id = ? AND fingerprint IN (
-                          SELECT fingerprint FROM project_checkpoint WHERE project_id = ?
-                          ORDER BY updated DESC, fingerprint LIMIT -1 OFFSET 256)""",
+            db.execute("""DELETE FROM project_checkpoint WHERE project_id = %s AND fingerprint IN (
+                          SELECT fingerprint FROM project_checkpoint WHERE project_id = %s
+                          ORDER BY updated DESC, fingerprint OFFSET 256)""",
                        (self.project_id, self.project_id))

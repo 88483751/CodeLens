@@ -21,7 +21,8 @@ function availableFacts({ analysis, files }: ReviewRequest) {
   return {
     dependencies: dependencies.filter((edge) => edge.internal && paths.has(edge.file ?? '') && modules.has(edge.target ?? ''))
       .map((edge) => `依赖：${edge.source} -> ${edge.target}`),
-    calls: calls.filter((edge) => edge.status === 'resolved' && paths.has(edge.file ?? ''))
+    calls: calls.filter((edge) => edge.status === 'resolved' && paths.has(edge.file ?? '') &&
+      [...modules].some((module) => edge.target === module || edge.target?.startsWith(module + '.')))
       .map((edge) => `调用：${edge.source} -> ${edge.target}（${edge.file}:L${edge.line}）`),
     findings: analysis.findings.filter((item) => paths.has(item.file))
       .sort((a, b) => Number(b.severity === 'critical') - Number(a.severity === 'critical'))

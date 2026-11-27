@@ -20,6 +20,7 @@ import urllib.request
 
 from . import contract
 from .prompts import chat_messages
+from .source_policy import NoRedirect, redact_model_text
 
 DEFAULT_TIMEOUT = 20.0
 MAX_RESPONSE_BYTES = 256 * 1024
@@ -107,14 +108,14 @@ class HttpProvider(Provider):
         body = {
             "model": self.model,
             "temperature": 0,
-            "messages": chat_messages(SYSTEM_PROMPT, skill.prompt(ctx)),
+            "messages": chat_messages(SYSTEM_PROMPT, redact_model_text(skill.prompt(ctx), self.api_key)),
         }
         payload = json.dumps(body, ensure_ascii=False).encode("utf-8")
         request = urllib.request.Request(self.endpoint, data=payload, method="POST")
         request.add_header("Content-Type", "application/json")
         request.add_header("Authorization", "Bearer " + self.api_key)
         try:
-            with urllib.request.urlopen(request, timeout=self.timeout) as response:
+            with _open_model_request(request, timeout=self.timeout) as response:
                 raw_bytes = response.read(MAX_RESPONSE_BYTES)
         except (urllib.error.URLError, OSError, ValueError) as exc:
             raise ProviderError("请求外部模型失败：" + str(exc)[:120])
@@ -129,6 +130,10 @@ class HttpProvider(Provider):
         raw["generator"] = {"provider": self.id, "model": self.model,
                             "prompt_version": skill.prompt_version}
         return raw, {"attempts": 1, "provider": self.id}
+
+
+def _open_model_request(request, timeout):
+    return urllib.request.build_opener(NoRedirect()).open(request, timeout=timeout)
 
 
 def candidates():

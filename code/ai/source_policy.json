@@ -1,0 +1,12 @@
+{
+  "sensitive_path": "(?:^|/)(?:secrets?|credentials?|\\.ssh|\\.aws)(?:/|$)|(?:^|/)(?:\\.env(?:\\.[^/]*)?|(?:secrets?|credentials?)[._-][^/]+|id_(?:rsa|ed25519)|[^/]+\\.(?:pem|key|p12|pfx))$",
+  "sensitive_text": [
+    "-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY-----[\\s\\S]*?(?:-----END (?:[A-Z0-9]+ )*PRIVATE KEY-----|(?![\\s\\S]))",
+    "\\b(?:sk-[a-z0-9_-]{15,}|gh[pousr]_[a-z0-9_]{20,}|github_pat_[a-z0-9_]{20,}|(?:AKIA|ASIA)[A-Z0-9]{16}|xox[baprs]-[a-z0-9-]{12,})\\b",
+    "\\bBearer[ \\t]+[a-z0-9._~+/=-]{8,}",
+    "\\b(?:[a-z0-9_-]{1,64}[_-])?(?:password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key)[\"']?(?:[ \\t]*:[ \\t]*[a-z0-9_.]+)?[ \\t]*(?:=|:)[ \\t]*(?:\"\"\"[\\s\\S]*?\"\"\"|'''[\\s\\S]*?'''|\"(?:\\\\.|[^\"\\\\\\r\\n])*\"|'(?:\\\\.|[^'\\\\\\r\\n])*'|`[^`]*`|[a-z0-9_+/=-]{12,})",
+    "\\b[a-z][a-z0-9+.-]*://[^\\s/:\"'<>]+:[^\\s/@\"'<>]+@",
+    "[\"'](?:[a-z]:[\\\\/]|\\\\\\\\|/(?:home|Users|root|mnt|var|tmp|opt|etc|srv|private|Volumes|workspaces?)/)[^\"'\\r\\n]+",
+    "\\b[a-z]:[\\\\/][^\\s\"'<>|()]+|(?:^|[\\s\"'(=])(?:\\\\\\\\|/(?:home|Users|root|mnt|var|tmp|opt|etc|srv|private|Volumes|workspaces?)/)[^\\s\"'<>|()]+"
+  ]
+}

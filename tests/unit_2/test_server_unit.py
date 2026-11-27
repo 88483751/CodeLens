@@ -177,7 +177,7 @@ class RequestTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(json.loads(data)["status"], "empty")
         self.assertNotIn("health", json.loads(data))
-        status, _, data = self.request("POST", "/api/ai", payload={"skills": ["logic-summary"]})
+        status, _, data = self.request("POST", "/api/ai", payload={"skills": ["logic-summary"], "source_consent": True})
         self.assertEqual(status, 200)
         self.assertEqual(json.loads(data)["warnings"][0]["code"], "no-source")
 
@@ -220,6 +220,7 @@ class RequestTests(unittest.TestCase):
         self.assertEqual(output["status"], "complete")
         self.assertEqual(output["functions"][0]["id"], "main.run")
         self.assertEqual(output["health"]["score"], 100)
+        request["source_consent"] = True
         with patch.object(server.explanation, "explain", return_value={"text": "说明"}) as explain:
             status, _, data = self.request("POST", "/api/explain", payload=request)
         explain.assert_called_once_with(request)
@@ -234,7 +235,7 @@ class RequestTests(unittest.TestCase):
         for path, error, expected_status, message in cases:
             with self.subTest(path=path), patch.object(server, "analyze", side_effect=error), \
                     patch.object(server.explanation, "explain", side_effect=error):
-                status, _, data = self.request("POST", path, payload={"skills": ["logic-summary"]})
+                status, _, data = self.request("POST", path, payload={"skills": ["logic-summary"], "source_consent": True})
                 self.assertEqual(status, expected_status)
                 self.assertIn(message, data.decode())
                 self.assertNotIn("private details", data.decode())
@@ -247,14 +248,14 @@ class RequestTests(unittest.TestCase):
             completed.append(payload["project"])
             return {"project": payload["project"]}
 
-        payload = {"project": "demo"}
+        payload = {"project": "demo", "source_consent": True}
         with patch.object(server.explanation, "review", side_effect=review) as service:
             status, headers, body = self.request("POST", "/api/review", payload=payload)
             _, _, partial = self.request("POST", "/api/review", payload=payload, write_error=BrokenPipeError())
         self.assertEqual(status, 200)
         self.assertIn(b"application/x-ndjson", headers)
         self.assertEqual([json.loads(row) for row in body.splitlines()], [
-            {"type": "progress", "label": "读取源码"}, {"type": "result", "result": payload},
+            {"type": "progress", "label": "读取源码"}, {"type": "result", "result": {"project": "demo"}},
         ])
         self.assertEqual(json.loads(partial)["type"], "progress")
         self.assertEqual(service.call_count, 2)
@@ -277,7 +278,7 @@ class RequestTests(unittest.TestCase):
 
     def test_review_error_handles_closed_client(self):
         with patch.object(server.explanation, "review", side_effect=server.explanation.ExplanationError("offline")):
-            _, _, body = self.request("POST", "/api/review", payload={}, write_error=BrokenPipeError())
+            _, _, body = self.request("POST", "/api/review", payload={"source_consent": True}, write_error=BrokenPipeError())
         self.assertEqual(json.loads(body)["type"], "error")
         self.assertIn("review_transport_closed", self.logger.log.call_args.args)
 
@@ -288,7 +289,7 @@ class RequestTests(unittest.TestCase):
             (RuntimeError("private details"), "AI 审查失败；未生成替代结论"),
         ]:
             with self.subTest(error=error), patch.object(server.explanation, "review", side_effect=error):
-                status, _, body = self.request("POST", "/api/review", payload={})
+                status, _, body = self.request("POST", "/api/review", payload={"source_consent": True})
                 self.assertEqual(status, 200)
                 event = json.loads(body)
                 self.assertEqual((event["type"], event["error"]), ("error", expected))
@@ -299,7 +300,7 @@ class RequestTests(unittest.TestCase):
         status, _, _ = self.request("GET", "/api/status", write_error=BrokenPipeError())
         self.assertEqual(status, 200)
         with patch.object(server.explanation, "review", side_effect=ConnectionResetError):
-            status, _, body = self.request("POST", "/api/review", payload={})
+            status, _, body = self.request("POST", "/api/review", payload={"source_consent": True})
         self.assertEqual((status, body), (200, b""))
 
     def test_plain_analysis_validation_error_uses_non_ai_error_shape(self):
@@ -321,6 +322,7 @@ class RequestTests(unittest.TestCase):
         listener = Mock(server_port=12345)
         listener.serve_forever.side_effect = KeyboardInterrupt
         with patch.object(sys, "argv", ["server", "--port", "12345"]), \
+                patch.object(server, "start_database", return_value="test-database"), \
                 patch.object(server, "ThreadingHTTPServer", return_value=listener) as create, \
                 redirect_stdout(io.StringIO()) as output:
             server.main()
@@ -333,7 +335,8 @@ class RequestTests(unittest.TestCase):
         listener = Mock(server_port=12345)
         listener.serve_forever.side_effect = RuntimeError("serve failed")
         with patch.object(sys, "argv", ["server"]), patch.object(
-                server, "ThreadingHTTPServer", return_value=listener), redirect_stdout(io.StringIO()):
+                server, "ThreadingHTTPServer", return_value=listener), \
+                patch.object(server, "start_database", return_value="test-database"), redirect_stdout(io.StringIO()):
             with self.assertRaisesRegex(RuntimeError, "serve failed"):
                 server.main()
         listener.server_close.assert_called_once()
@@ -343,6 +346,7 @@ class RequestTests(unittest.TestCase):
         base = str(source.parents[1])
         path = [entry for entry in sys.path if entry != base]
         with patch.object(sys, "path", path), patch.object(sys, "argv", ["server", "--port", "9876"]), \
+                patch("backend.local_database.start_database", return_value="test-database"), \
                 patch("http.server.ThreadingHTTPServer", side_effect=OSError("in use")), \
                 self.assertRaisesRegex(SystemExit, "9876"):
             runpy.run_path(str(source), run_name="__main__")
@@ -353,3 +357,15 @@ class RequestTests(unittest.TestCase):
                 self.assertRaisesRegex(SystemExit, "Python 3.11"):
             server.main()
         create.assert_not_called()
+
+    def test_external_skills_drop_sensitive_file_inputs(self):
+        http = server.ai_provider.HttpProvider("https://model.invalid", "model", "fake-key")
+        ordinary = {"path": "main.py", "content": "pass"}
+        files = [ordinary, {"path": "credentials.py", "content": "pass"}, {"path": None}]
+        with patch.object(server.ai_provider, "resolve_provider", return_value=(http, None)), \
+                patch.object(server, "analyze", side_effect=ValueError) as analyze:
+            for before, after in ((files, [ordinary]), ("invalid", "invalid")):
+                with self.assertRaises(ValueError):
+                    server.ai_analyze({"files": before, "skills": ["logic-summary"],
+                                       "options": {"source_consent": True}})
+                self.assertEqual(analyze.call_args.args[0]["files"], after)

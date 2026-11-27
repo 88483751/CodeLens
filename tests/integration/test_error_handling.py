@@ -109,7 +109,7 @@ class ErrorHandlingTests(unittest.TestCase):
 
         server.explanation.review = boom
         try:
-            status, raw = self.request("/api/review", json.dumps({"files": []}).encode())
+            status, raw = self.request("/api/review", json.dumps({"files": [], "source_consent": True}).encode())
         finally:
             server.explanation.review = original
         self.assertEqual(status, 200)  # NDJSON stream; failure is an event, not an HTTP error

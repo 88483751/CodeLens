@@ -6,7 +6,7 @@ import {
 
 const token = 'unit-token';
 const settings = { baseUrl: 'https://model.invalid/v1', model: 'model-a', apiKey: 'fake-key' };
-const reviewRequest = { project: 'demo', files: [{ path: 'main.py', content: 'pass' }], settings };
+const reviewRequest = { sourceConsent: true, project: 'demo', files: [{ path: 'main.py', content: 'pass' }], settings };
 const ignoreProgress = () => {};
 
 beforeEach(() => {
@@ -181,7 +181,7 @@ test('explain sends target and provider settings and fills optional fields', asy
   vi.spyOn(globalThis, 'fetch').mockImplementation(async (url, { body }) => {
     assert.equal(url, '/api/explain');
     assert.deepEqual(JSON.parse(body), {
-      project: 'demo', files: reviewRequest.files, target, include_context: true,
+      project: 'demo', files: reviewRequest.files, target, include_context: false, source_consent: true,
       provider: { base_url: settings.baseUrl, model: settings.model, api_key: settings.apiKey },
     });
     return Response.json({ text: '说明' });

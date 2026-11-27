@@ -2,6 +2,12 @@
 setlocal
 cd /d "%~dp0"
 
+if not defined CODELENS_LOCAL_DATABASE_URL (
+  echo Set CODELENS_LOCAL_DATABASE_URL to the local PostgreSQL database. See README.md.
+  pause
+  exit /b 1
+)
+
 set "UIURL=http://localhost:5173/"
 set "APIURL=http://127.0.0.1:18766"
 
@@ -27,12 +33,12 @@ if errorlevel 1 (
   echo CodeLens requires Python 3.11 or later. Recreate .venv with a supported Python.
   goto backend_setup_failed
 )
-"%BACKEND_PYTHON%" -c "import fastapi, keyring" >nul 2>&1
+"%BACKEND_PYTHON%" -c "import fastapi, keyring, psycopg" >nul 2>&1
 if errorlevel 1 (
   echo Installing backend dependencies...
   "%BACKEND_PYTHON%" -m pip install -r requirements-backend.txt
   if errorlevel 1 goto backend_setup_failed
-  "%BACKEND_PYTHON%" -c "import fastapi, keyring" >nul
+  "%BACKEND_PYTHON%" -c "import fastapi, keyring, psycopg" >nul
   if errorlevel 1 goto backend_setup_failed
 )
 

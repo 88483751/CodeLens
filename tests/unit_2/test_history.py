@@ -1,7 +1,6 @@
 """Project history, issue tracking, and review context regression tests."""
 from pathlib import Path
 import sys
-from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import patch
 
@@ -10,6 +9,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "code"))
 from ai import explanation
 from backend.history import HistoryStore, MEMORY_BYTES, _recurring, memory_prompt
 from backend.server import analyze, enrich
+from _local_postgres import isolated_local_dsn
 
 
 def report(content, *, path="main.py", issue=True, name="same"):
@@ -22,8 +22,7 @@ def report(content, *, path="main.py", issue=True, name="same"):
 
 class HistoryTests(unittest.TestCase):
     def setUp(self):
-        directory = self.enterContext(TemporaryDirectory())
-        self.store = HistoryStore(Path(directory) / "history.sqlite3")
+        self.store = HistoryStore(isolated_local_dsn(self))
 
     def record(self, body, project=None, **kwargs):
         return self.store.record(report(body, **kwargs), project)
@@ -98,7 +97,7 @@ class HistoryTests(unittest.TestCase):
         checkpoint = self.store.checkpoints(project)
         self.assertIsNone(checkpoint.load("key"))
         checkpoint.save("key", {"notes": ["note"]}, 1)
-        reopened = HistoryStore(self.store.path)
+        reopened = HistoryStore(self.store.dsn)
         self.assertEqual(reopened.detail(project, run)["ai"], {"sections": {}})
         self.assertEqual(reopened.checkpoints(project).load("key"), {"notes": ["note"]})
         reopened.delete(project)

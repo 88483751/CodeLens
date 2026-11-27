@@ -10,6 +10,7 @@ from urllib.error import HTTPError, URLError
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "code"))
 from ai import explanation, provider
+from ai.source_policy import redact_model_text
 
 
 class ExplainTests(unittest.TestCase):
@@ -26,7 +27,7 @@ class ExplainTests(unittest.TestCase):
 
     def test_explain_sends_only_selected_function_and_resolved_context(self):
         with patch.object(explanation, "_chat", return_value=("第 4 行；[helper.py:L1-L2]", True)) as chat:
-            result = explanation.explain(self.payload)
+            result = explanation.explain({**self.payload, "include_context": True})
         endpoint, model, key, _, prompt = chat.call_args.args
         self.assertEqual((endpoint, model, key), ("https://model.invalid/v1/chat/completions", "unit", "fake-key"))
         self.assertIn("4:     return work()", prompt)
@@ -51,6 +52,42 @@ class ExplainTests(unittest.TestCase):
                 with self.subTest(target=payload["target"]), self.assertRaisesRegex(ValueError, message):
                     explanation.explain(payload)
         chat.assert_not_called()
+
+    def test_context_omits_sensitive_callees_and_functions_already_selected(self):
+        files = [
+            {"path": "main.py", "content": "from credentials import secret\ndef run():\n    return helper() + secret()\ndef helper():\n    return 1\n"},
+            {"path": "credentials.py", "content": "def secret():\n    return 2\n"},
+        ]
+        payload = {**self.payload, "files": files, "target": {"file": "main.py"}, "include_context": True}
+        with patch.object(explanation, "_chat", return_value=("结果", False)) as chat:
+            explanation.explain(payload)
+            self.assertNotIn("2:     return 2", chat.call_args.args[-1])
+            self.assertEqual(chat.call_args.args[-1].count("4: def helper()"), 1)
+            with self.assertRaisesRegex(ValueError, "禁止发送"):
+                explanation.explain({**payload, "target": {"file": "credentials.py"}})
+            self.assertEqual(chat.call_count, 1)
+
+    def test_callee_inside_selected_range_is_not_repeated(self):
+        record = {"path": "main.py", "source": "def helper():\n    return 1\n"}
+        callee = {"file": "main.py", "id": "main.helper", "line": 1, "end_line": 2}
+        self.assertIsNone(explanation._callee_snippet(callee, {"main.py": record}, record, 1, 2))
+
+    def test_masking_preserves_private_key_line_boundaries(self):
+        private_key = "-----BEGIN PRIVATE KEY-----\nsynthetic-value\n-----END PRIVATE KEY-----"
+        filtered = redact_model_text("prefix\n" + private_key + "\nsuffix")
+        self.assertEqual(filtered.splitlines(), ["prefix", "[REDACTED]", "[REDACTED]", "[REDACTED]", "suffix"])
+
+    def test_invalid_review_budgets_are_rejected(self):
+        for val, error in (("abc", "须为整数"), ("100", "预算过小")):
+            with patch.dict(os.environ, {"CODELENS_REVIEW_CONTEXT_TOKENS": val}):
+                with self.assertRaisesRegex(ValueError, error):
+                    explanation._review_budget()
+
+    def test_unreadable_error_body_does_not_mask_http_failure(self):
+        error = Mock(code=400)
+        error.read.side_effect = OSError("broken pipe")
+        self.assertIn("HTTP 400", explanation._model_http_error(error))
+        error.close.assert_called_once()
 
     def test_provider_config_rejects_bad_types_and_unsafe_endpoints(self):
         for payload in (None, {"provider": [1]}, {"provider": {"base_url": 1}},
@@ -112,7 +149,7 @@ class ExplainTests(unittest.TestCase):
             {"path": "main.py", "content": caller}, {"path": "helper.py", "content": helpers},
         ]}
         with patch.object(explanation, "_chat", return_value=("[helper.py:L1] [helper.py:L22]", False)):
-            enabled = explanation.explain(payload)
+            enabled = explanation.explain({**payload, "include_context": True})
             disabled = explanation.explain({**payload, "include_context": False})
         self.assertEqual(enabled["omitted_context"], 2)
         self.assertEqual(len(enabled["context"]), 7)

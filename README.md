@@ -59,9 +59,9 @@ CodeLens 的目标是**把 AI 生成的代码从黑盒变成可审查对象**：
 
 ## 快速开始
 
-需要 Python 3.11+ 与 Node.js 22.12+（22 系列）或 24+。后端使用 FastAPI，AI 审查使用 LangGraph 和 LangChain Core，界面使用 Vite + React。
+本机版需要 Python 3.11+、Node.js 22.12+（22 系列）或 24+，以及运行中的本机 PostgreSQL。先[创建本机数据库并设置连接](docs/software/local-workbench.md#本机数据库)。后端使用 FastAPI，AI 审查使用 LangGraph 和 LangChain Core，界面使用 Vite + React。
 
-**一键启动（推荐）**。Windows 双击 `start-codelens.cmd`，macOS/Linux 运行 `sh start-codelens.sh`。脚本使用项目的 `.venv`，按需安装后端和前端依赖，启动后端 API（18766）与 React 界面（5173），并自动打开浏览器。
+**一键启动（推荐）**。在已设置 `CODELENS_LOCAL_DATABASE_URL` 的终端运行 `.\start-codelens.cmd`（Windows）或 `sh start-codelens.sh`（macOS/Linux）。脚本使用项目的 `.venv`，按需安装依赖，启动 API（18766）和 React 界面（5173）。旧版 SQLite 记录按[迁移步骤](docs/software/local-workbench.md#迁移旧版记录)导入。
 
 手动启动：
 
@@ -73,7 +73,7 @@ cd codelens-prototype && npm install && npm run dev   # 终端 2：界面，loca
 
 界面地址是 [http://localhost:5173](http://localhost:5173)；18766 提供 FastAPI 接口和 /docs 文档。若后端端口被占用，用 `--port 18767` 启动并给前端设置 `VITE_API_TARGET=http://127.0.0.1:18767`。
 
-静态分析仅在本机服务内存中完成，不执行或导入目标项目。导入时选择的项目源码会分批发送到配置的模型服务用于 AI 项目审查；未配置模型或审查失败时静态结果照常可用，不使用模板替代失败结果。最多 200 个文件、请求体 12 MB；默认排除测试、虚拟环境和构建目录。详细范围与限制见 [工作台说明](docs/software/local-workbench.md)。
+静态分析仅在本机服务内存中完成，不执行或导入目标项目。用户确认本次 AI 审查的模型地址和文件范围后，处理过的源码片段才会分批发送到该模型服务；未配置模型或审查失败时静态结果照常可用，不使用模板替代失败结果。最多 200 个文件、请求体 12 MB；默认排除测试、虚拟环境和构建目录。详细范围与限制见 [工作台说明](docs/software/local-workbench.md)。
 
 首页只负责导入与本机静态分析，不展示 API 设置，也不会自动调用模型。进入结果页后，在顶部「模型设置」中填写兼容 `chat/completions` 的 Base URL、模型名称和 API Key，再按需生成逻辑说明、设计检查与风险评估。「导出报告」可分别选择这三部分并预览实际导出内容。审查中断后可以从服务端断点继续。API Key 保存在 Windows Credential Manager、macOS Keychain 或 Linux Secret Service，浏览器只保存接口地址和模型名称；设置窗口可随时清除已保存密钥。也可配置服务端 `CODELENS_AI_ENDPOINT`（完整端点）、`CODELENS_AI_MODEL`、`CODELENS_AI_KEY` 环境变量。
 

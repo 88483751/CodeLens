@@ -14,6 +14,7 @@ import { browserAccountStorageKey, browserMode, syncMode } from '../api/browserM
 import { syncScopedReview } from '../api/historySync';
 import { browserModelUrl } from '../api/browserReview';
 import { browserApiKey } from '../api/browserStorage';
+import { confirmSourceSend, shareableSourcePath } from '../api/sourcePolicy';
 import { filesFromDataTransfer, prepareSelection, type RawFile } from '../lib/files';
 import { exportReport, type ExportFormat } from '../lib/export';
 import { logger } from '../lib/logger';
@@ -114,8 +115,8 @@ interface AppContextValue {
   sourceTarget: SourceTarget | null;
   connect: () => Promise<void>;
   go: (route: Route) => void;
-  startAnalysis: (raw: RawFile[], autoReview?: boolean) => Promise<void>;
-  startFromTransfer: (transfer: DataTransfer, autoReview?: boolean) => Promise<void>;
+  startAnalysis: (raw: RawFile[]) => Promise<void>;
+  startFromTransfer: (transfer: DataTransfer) => Promise<void>;
   cancelAnalysis: () => void;
   requestReimport: () => void;
   confirmReimportAction: () => void;
@@ -336,7 +337,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [exportSource, setExportSource] = useState(false);
   const [settings, setSettings] = useState<LlmSettings>(loadSettings);
   const [credentials, setCredentials] = useState<CredentialStoreInfo>(EMPTY_CREDENTIALS);
-  const currentSettings = useRef(settings);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsError, setSettingsError] = useState('');
   const [scopedReviews, setScopedReviews] = useState<ReadonlyMap<string, ScopedReviewResult>>(new Map());
@@ -456,14 +456,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const executeReview = useCallback(
-    async (data: AnalyzeResult, modelSettings = currentSettings.current): Promise<AiReviewResult | null> => {
-      const files = data.files
-        .filter((item) => item.status === 'ok' && typeof item.source === 'string')
-        .map((item) => ({ path: item.path, content: item.source }));
-      if (!files.length) {
-        setReviewError('没有成功解析的源码，无法生成 AI 审查。');
-        return null;
-      }
+    async (data: AnalyzeResult, files: { path: string; content: string }[],
+      modelSettings: LlmSettings): Promise<AiReviewResult | null> => {
       const controller = new AbortController();
       reviewController.current = controller;
       setReviewBusy(true);
@@ -472,7 +466,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       progressClock.current = performance.now();
       try {
         const review = await reviewProject(
-          { project: data.project, files, settings: modelSettings,
+          { project: data.project, files, settings: modelSettings, sourceConsent: true,
             ...(browserMode && { analysis: data }),
             useStoredCredential: credentials.configured,
             ...(data.history && { history: data.history, useHistory }) },
@@ -507,20 +501,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
     [token, reportReviewProgress, useHistory, credentials.configured],
   );
 
-  const announceAnalysis = useCallback(async (data: AnalyzeResult, autoReview: boolean) => {
-    const settings = currentSettings.current;
+  const announceAnalysis = useCallback((data: AnalyzeResult) => {
     if (window.location.hash !== '#overview') window.location.hash = 'overview';
     setRoute('overview');
     analysisNotice(data, toast);
-    if (autoReview && providerConfigured(settings, credentials.configured)) {
-      const review = await executeReview(data, settings);
-      if (review) {
-        toast('AI 审查完成', 'success');
-      } else {
-        toast('AI 审查未完成，可在逻辑说明中继续', 'warning');
-      }
-    }
-  }, [executeReview, toast, credentials.configured]);
+  }, [toast]);
 
   const openHistoryResult = useCallback((projectId: string, analysisId: number, detail: HistoryDetail) => {
     const data: AnalyzeResult = {
@@ -543,7 +528,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, [resetAfterResult, toast]);
 
   const runWithRaw = useCallback(
-    async (source: RawFile[] | DataTransfer, autoReview = true) => {
+    async (source: RawFile[] | DataTransfer) => {
       if (analyzeController.current || status !== 'ready') return;
       setBusy(true);
       setErrors([]);
@@ -578,7 +563,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         );
         resetAfterResult(data);
 
-        await announceAnalysis(data, autoReview && !browserMode);
+        announceAnalysis(data);
       } catch (error) {
         logger.warn('analyze', 'analysis.stopped', {
           aborted: isAbortError(error),
@@ -598,15 +583,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
   );
 
   const startAnalysis = useCallback(
-    async (raw: RawFile[], autoReview = true) => {
-      await runWithRaw(raw, autoReview);
+    async (raw: RawFile[]) => {
+      await runWithRaw(raw);
     },
     [runWithRaw],
   );
 
   const startFromTransfer = useCallback(
-    async (transfer: DataTransfer, autoReview = true) => {
-      await runWithRaw(transfer, autoReview);
+    async (transfer: DataTransfer) => {
+      await runWithRaw(transfer);
     },
     [runWithRaw],
   );
@@ -738,8 +723,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     if (baseUrl && !validBaseUrl(baseUrl)) {
       return false;
     }
-    currentSettings.current = { baseUrl, model, apiKey };
-    setSettings(currentSettings.current);
+    setSettings({ baseUrl, model, apiKey });
     try {
       const key = browserAccountStorageKey(SETTINGS_KEY);
       if (baseUrl || model) localStorage.setItem(key, JSON.stringify({ baseUrl, model }));
@@ -769,8 +753,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         }
       }
       const { baseUrl, model } = checked.settings;
-      currentSettings.current = { baseUrl, model, apiKey: '' };
-      setSettings(currentSettings.current);
+      setSettings({ baseUrl, model, apiKey: '' });
       let persisted = true;
       try {
         localStorage.setItem(browserAccountStorageKey(SETTINGS_KEY), JSON.stringify({ baseUrl, model }));
@@ -789,8 +772,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     try {
       const next = await deleteStoredApiKey(token);
       setCredentials(next);
-      currentSettings.current = { ...currentSettings.current, apiKey: '' };
-      setSettings(currentSettings.current);
+      setSettings((current) => ({ ...current, apiKey: '' }));
       setSettingsError('');
       toast(browserMode ? '已清除当前标签页的 API Key' : '已清除系统凭据库中的 API Key', 'success');
     } catch (error) {
@@ -838,7 +820,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
       openSettings();
       return;
     }
-    await executeReview(result);
+    const files = result.files
+      .filter((item) => item.status === 'ok' && typeof item.source === 'string' && shareableSourcePath(item.path))
+      .map((item) => ({ path: item.path, content: item.source }));
+    if (!files.length) {
+      setReviewError('没有成功解析且允许发送的源码，无法生成 AI 审查。');
+      return;
+    }
+    if (confirmSourceSend(settings, files.map((file) => file.path), '全项目综合审查')) {
+      await executeReview(result, files, settings);
+    }
   }, [result, reviewBusy, settings, credentials.configured, executeReview, openSettings]);
 
   const cancelReview = useCallback(() => {

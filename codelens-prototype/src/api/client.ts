@@ -17,6 +17,7 @@ import { logger } from '../lib/logger';
 import { browserMode, syncMode } from './browserMode';
 import { flushSync, recordSyncAnalysis, syncDelete, syncDetail, syncProjects } from './historySync';
 import { browserCachedReview, browserExplain, browserReview } from './browserReview';
+import { sourceConsentMessage } from './sourcePolicy';
 import {
   browserCredentials, browserHistoryDetail, browserHistoryProjects, recordBrowserAnalysis,
   removeBrowserHistory, setBrowserApiKey,
@@ -345,6 +346,7 @@ export interface ExplainRequest {
   files: { path: string; content: string }[];
   target: ExplainTarget;
   settings: LlmSettings;
+  sourceConsent?: boolean;
 }
 
 export function explainCode(
@@ -352,6 +354,7 @@ export function explainCode(
   token: string,
   signal: AbortSignal,
 ): Promise<ExplainResult> {
+  if (request.sourceConsent !== true) return Promise.reject(new ApiError(sourceConsentMessage));
   if (browserMode) return browserExplain(request, signal);
   return withLogging('api', '/api/explain', {}, () => explainCodeInner(request, token, signal));
 }
@@ -364,7 +367,8 @@ async function explainCodeInner(
   const payload = withProvider({
     project: request.project,
     files: request.files,
-    include_context: true,
+    source_consent: request.sourceConsent,
+    include_context: false,
     target: request.target,
   }, request.settings);
   const response = await postJson('/api/explain', payload, token, signal);
@@ -419,6 +423,7 @@ export interface ReviewRequest {
   history?: AnalysisHistory;
   useHistory?: boolean;
   useStoredCredential?: boolean;
+  sourceConsent?: boolean;
 }
 
 async function historyRequest<T>(endpoint: string, body: object, token: string, signal: AbortSignal): Promise<T> {
@@ -475,6 +480,7 @@ function reviewPayload(request: ReviewRequest & { scope?: ScopedReviewResult['sc
     project: request.project, files: request.files, scope: request.scope,
     history_project: request.history?.project_id, history_run: request.history?.analysis_id,
     use_history: request.useHistory,
+    source_consent: request.sourceConsent,
   }, request.settings);
 }
 
@@ -520,6 +526,7 @@ export function reviewProject(
   onProgress: (progress: AiReviewProgress) => void,
   signal: AbortSignal,
 ): Promise<AiReviewResult | ScopedReviewResult> {
+  if (request.sourceConsent !== true) return Promise.reject(new ApiError(sourceConsentMessage));
   if (browserMode) return browserReview(request, onProgress, signal);
   return withLogging('api', '/api/review', {}, () =>
     reviewProjectInner(request, token, onProgress, signal),

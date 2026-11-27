@@ -3,6 +3,7 @@ import { browserExplain, browserReview } from '../../codelens-prototype/src/api/
 
 const request = {
   project: 'small',
+  sourceConsent: true,
   files: [{ path: 'main.py', content: 'print(1)' }],
   target: { file: 'main.py', function: null },
   settings: { baseUrl: 'https://model.invalid/v1', model: 'test-model', apiKey: 'test-key' },
@@ -15,6 +16,27 @@ function completion(content, finishReason = 'stop') {
 beforeEach(() => {
   vi.stubGlobal('location', { origin: 'https://app.invalid' });
   vi.stubGlobal('crypto', {});
+});
+
+test('blocks unapproved source and redacts sensitive material in the actual model request', async () => {
+  const fetch = vi.spyOn(globalThis, 'fetch').mockResolvedValue(completion('{"logic":"演示"}'));
+  const signal = new AbortController().signal;
+  await assert.rejects(browserReview({ ...request, sourceConsent: undefined }, () => {}, signal), /请先确认/);
+  assert.equal(fetch.mock.calls.length, 0);
+
+  const files = [
+    { path: 'main.py', content: [
+      'DB_PASSWORD = "example-secret-value"', '# C:/Users/demo/private.py',
+      '-----BEGIN PRIVATE KEY-----', 'EXAMPLE-PRIVATE-MATERIAL', '-----END PRIVATE KEY-----',
+      'print(42)',
+    ].join('\n') },
+    { path: 'credentials/private.py', content: 'FORBIDDEN_FILE_MARKER' },
+  ];
+  const result = await browserReview({ ...request, files, scope: 'file' }, () => {}, signal);
+  const prompt = JSON.parse(fetch.mock.calls[0][1].body).messages[1].content;
+  assert.doesNotMatch(prompt, /example-secret-value|C:\/Users|EXAMPLE-PRIVATE-MATERIAL|FORBIDDEN_FILE_MARKER|credentials\/private/);
+  assert.match(prompt, /6: print\(42\)/);
+  assert.deepEqual(result.context.map((part) => part.file), ['main.py']);
 });
 
 test('an empty length-limited response gets one larger budget for the same prompt', async () => {

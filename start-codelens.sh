@@ -2,6 +2,8 @@
 set -eu
 cd "$(dirname "$0")"
 
+: "${CODELENS_LOCAL_DATABASE_URL:?Set CODELENS_LOCAL_DATABASE_URL to the local PostgreSQL database. See README.md.}"
+
 UIURL="http://localhost:5173/"
 
 echo "============================================================"
@@ -20,10 +22,10 @@ if ! "$BACKEND_PYTHON" -c 'import sys; sys.exit(sys.version_info < (3, 11))'; th
   echo "CodeLens requires Python 3.11 or later. Recreate .venv with a supported Python." >&2
   exit 1
 fi
-if ! "$BACKEND_PYTHON" -c 'import fastapi, keyring' >/dev/null 2>&1; then
+if ! "$BACKEND_PYTHON" -c 'import fastapi, keyring, psycopg' >/dev/null 2>&1; then
   echo "Installing backend dependencies..."
   "$BACKEND_PYTHON" -m pip install -r requirements-backend.txt
-  "$BACKEND_PYTHON" -c 'import fastapi, keyring' >/dev/null
+  "$BACKEND_PYTHON" -c 'import fastapi, keyring, psycopg' >/dev/null
 fi
 
 # New React workbench (codelens-prototype)

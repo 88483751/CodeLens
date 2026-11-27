@@ -5,12 +5,12 @@ import unittest
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from threading import Event
-from tempfile import TemporaryDirectory
 from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "code"))
 from ai import explanation
 from ai.review_store import ReviewStore
+from _local_postgres import isolated_local_dsn
 
 
 class ProjectReviewTests(unittest.TestCase):
@@ -21,6 +21,7 @@ class ProjectReviewTests(unittest.TestCase):
         chat = patch.object(explanation, "_chat")
         self.chat = chat.start()
         self.addCleanup(chat.stop)
+
         self.payload = {
             "project": "example",
             "provider": {"base_url": "https://model.invalid/v1", "model": "model-a"},
@@ -31,6 +32,17 @@ class ProjectReviewTests(unittest.TestCase):
             "design": "Unknown file [missing.py:L1]",
             "risks": "Out of range [main.py:L3]",
         })
+
+    def test_bounded_facts_omit_long_items_and_keep_short_items(self):
+        facts, omitted = explanation._select_facts({"findings": ["long finding", "x"]}, ["findings"], 3)
+        self.assertEqual((facts, omitted), ("x", True))
+
+    def test_resumed_project_uses_completed_summary(self):
+        job = explanation._ReviewJob()
+        job.summary = {"text": "saved summary", "compressed": True, "limited": False}
+        with patch.object(explanation, "_summarize_notes") as summarize:
+            self.assertIs(explanation._summary_material([], Mock(job=job), 0, 1, 1), job.summary)
+        summarize.assert_not_called()
 
     def test_scoped_review_uses_natural_guidance_and_only_requests_logic(self):
         for scope, guide in (("file", "包初始化"), ("folder", "如何分工")):
@@ -172,14 +184,13 @@ class ProjectReviewTests(unittest.TestCase):
 
     def test_completed_section_survives_restart_and_other_section_failure(self):
         self.chat.side_effect = [(self.report, False), explanation.ExplanationError("model timeout")]
-        with TemporaryDirectory() as directory:
-            store = ReviewStore(Path(directory) / "reviews.sqlite3")
-            with self.assertRaisesRegex(explanation.ExplanationError, "设计检查.*model timeout"):
-                explanation.review(self.payload, store=store)
-            explanation._REVIEW_JOBS.clear()
-            self.chat.reset_mock(side_effect=True)
-            self.chat.return_value = (self.report, False)
-            outcome = explanation.review(self.payload, store=store)
+        dsn = isolated_local_dsn(self)
+        with self.assertRaisesRegex(explanation.ExplanationError, "设计检查.*model timeout"):
+            explanation.review(self.payload, store=ReviewStore(dsn))
+        explanation._REVIEW_JOBS.clear()
+        self.chat.reset_mock(side_effect=True)
+        self.chat.return_value = (self.report, False)
+        outcome = explanation.review(self.payload, store=ReviewStore(dsn))
 
         self.assertEqual(set(outcome["sections"]), {"logic", "design", "risks"})
         self.assertEqual(self.chat.call_count, 2)
@@ -327,16 +338,15 @@ class ProjectReviewTests(unittest.TestCase):
 
 class ReviewStoreTests(unittest.TestCase):
     def test_store_round_trips_updates_and_bounds_checkpoints(self):
-        with TemporaryDirectory() as directory:
-            store = ReviewStore(Path(directory) / "nested" / "reviews.sqlite3")
-            self.assertIsNone(store.load("missing"))
-            for index in range(256):
-                store.save(str(index), {"index": index}, index)
-            store.save("255", {"index": "updated"}, 300)
-            self.assertEqual(store.load("255"), {"index": "updated"})
-            store.save("new", {"index": 256}, 301)
-            self.assertIsNone(store.load("0"))
-            self.assertEqual(store.load("new"), {"index": 256})
+        store = ReviewStore(isolated_local_dsn(self))
+        self.assertIsNone(store.load("missing"))
+        for index in range(256):
+            store.save(str(index), {"index": index}, index)
+        store.save("255", {"index": "updated"}, 300)
+        self.assertEqual(store.load("255"), {"index": "updated"})
+        store.save("new", {"index": 256}, 301)
+        self.assertIsNone(store.load("0"))
+        self.assertEqual(store.load("new"), {"index": 256})
 
     def test_restore_and_storage_failures_degrade_without_losing_ownership(self):
         store = Mock()

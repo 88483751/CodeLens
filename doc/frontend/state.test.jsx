@@ -28,6 +28,7 @@ const ready = {
 
 beforeEach(() => {
   vi.resetAllMocks();
+  vi.spyOn(window, "confirm").mockReturnValue(true);
   vi.spyOn(console, 'debug').mockImplementation(() => {});
   vi.spyOn(console, 'warn').mockImplementation(() => {});
   localStorage.clear();
@@ -121,7 +122,7 @@ test('analysis initializes workspace and finding navigation and export use the l
   ]);
 });
 
-test('settings validate and trim inputs, omit API keys from storage and enable auto-review', async () => {
+test('settings validate and trim inputs, omit API keys from storage and require approval for review', async () => {
   const state = await renderProvider();
   act(() => state().openSettings());
   await act(() => state().saveSettings({ ...settings, baseUrl: 'https://user:pass@host.invalid' }));
@@ -136,9 +137,14 @@ test('settings validate and trim inputs, omit API keys from storage and enable a
   assert.deepEqual(stored, { baseUrl: settings.baseUrl, model: settings.model });
 
   await act(() => state().startAnalysis(selection));
+  assert.equal(reviewProject.mock.calls.length, 0);
+  window.confirm.mockReturnValueOnce(false);
+  await act(() => state().runReview());
+  assert.equal(reviewProject.mock.calls.length, 0);
+  await act(() => state().runReview());
   assert.equal(state().aiReview, report);
   assert.deepEqual(reviewProject.mock.calls[0][0], {
-    project: 'demo', settings: { ...settings, apiKey: '' }, useStoredCredential: true,
+    project: 'demo', settings: { ...settings, apiKey: '' }, useStoredCredential: true, sourceConsent: true,
     files: [{ path, content: projectResult().files[0].source }],
   });
   assert.equal(state().reviewBusy, false);
@@ -152,7 +158,7 @@ test('settings require a key and authentication failures reopen the dialog', asy
   assert.equal(state().settingsOpen, true);
   assert.match(state().settingsError, /完整填写/);
   await act(() => state().saveSettings(settings));
-  await act(() => state().startAnalysis(selection, false));
+  await act(() => state().startAnalysis(selection));
   reviewProject.mockRejectedValueOnce(new ApiError('模型接口返回 HTTP 401', 502));
   await act(() => state().runReview());
   assert.equal(state().settingsOpen, true);
@@ -162,8 +168,8 @@ test('settings require a key and authentication failures reopen the dialog', asy
 test('configured models stay idle during static-only imports and remain available for manual review', async () => {
   const state = await renderProvider();
   act(() => state().applySettings(settings));
-  await act(() => state().startAnalysis(selection, false));
-  await act(() => state().startFromTransfer({ items: [], files: [selection[0].file] }, false));
+  await act(() => state().startAnalysis(selection));
+  await act(() => state().startFromTransfer({ items: [], files: [selection[0].file] }));
   assert.ok(state().result);
   assert.equal(reviewProject.mock.calls.length, 0);
   await act(() => state().runReview());
@@ -175,6 +181,7 @@ test('review failure leaves static analysis available and retry can succeed', as
   act(() => state().applySettings(settings));
   reviewProject.mockRejectedValueOnce(new Error('model offline'));
   await act(() => state().startAnalysis(selection));
+  await act(() => state().runReview());
   assert.equal(state().result.project, 'demo');
   assert.equal(state().aiReview, null);
   assert.equal(state().importing, false);
@@ -401,7 +408,7 @@ test('developer fixture loader initializes a project and review rejects missing 
     assert.equal(state().status, 'ready');
     act(() => state().applySettings(settings));
     await act(() => state().runReview());
-    assert.match(state().reviewError, /没有成功解析的源码/);
+    assert.match(state().reviewError, /没有成功解析且允许发送的源码/);
     assert.equal(reviewProject.mock.calls.length, 0);
   } finally {
     vi.unstubAllEnvs();
@@ -424,13 +431,13 @@ test('temporary notices disappear when their timers expire', async () => {
 
 test('scoped reviews are exported with their project and cleared on new import', async () => {
   const state = await renderProvider();
-  await act(() => state().startAnalysis(selection, false));
+  await act(() => state().startAnalysis(selection));
   const first = state().result;
   const scoped = { ...report, scope: 'file', sections: { logic: report.sections.logic } };
   act(() => state().saveScopedReview(first, 'file:' + path, scoped));
   act(() => state().runExport('json'));
   assert.equal(exportReport.mock.lastCall[2].scopedReviews.get('file:' + path), scoped);
-  await act(() => state().startAnalysis(selection, false));
+  await act(() => state().startAnalysis(selection));
   act(() => state().saveScopedReview(first, 'file:' + path, scoped));
   assert.equal(state().scopedReviews.size, 0);
 });

@@ -21,6 +21,7 @@ vi.mock('../../codelens-prototype/src/state/AppState.tsx', () => ({
 }));
 
 beforeEach(() => {
+  vi.spyOn(window, "confirm").mockReturnValue(true);
   mocked.context = {
     route: 'overview', result: projectResult(),
     scopedReviews: new Map(),
@@ -371,7 +372,7 @@ test('upload starts static-only analysis and renders progress', () => {
   const file = new File(['pass'], 'main.py');
   Object.defineProperty(input, 'files', { value: [file], configurable: true });
   act(() => input.dispatchEvent(new Event('change', { bubbles: true })));
-  assert.deepEqual(mocked.context.startAnalysis.mock.lastCall, [[{ file, path: 'main.py' }], false]);
+  assert.deepEqual(mocked.context.startAnalysis.mock.lastCall, [[{ file, path: 'main.py' }]]);
   const dropZone = button('选择文件夹', container).parentElement;
   const dataTransfer = { items: [], files: [file] };
   for (const type of ['dragenter', 'dragover', 'dragleave', 'drop']) {
@@ -380,7 +381,7 @@ test('upload starts static-only analysis and renders progress', () => {
     assert.equal(event.defaultPrevented, true);
   }
   assert.equal(dataTransfer.dropEffect, 'copy');
-  assert.deepEqual(mocked.context.startFromTransfer.mock.calls, [[dataTransfer, false]]);
+  assert.deepEqual(mocked.context.startFromTransfer.mock.calls, [[dataTransfer]]);
 
   Object.assign(mocked.context, {
     busy: true, phase: 'AI 正在分析', progress: 1, progressTotal: 3, eta: 61,
@@ -412,12 +413,12 @@ test('upload keeps AI configuration and automatic review off the landing page', 
   const file = new File(['pass'], 'main.py');
   Object.defineProperty(input, 'files', { value: [file], configurable: true });
   act(() => input.dispatchEvent(new Event('change', { bubbles: true })));
-  assert.deepEqual(mocked.context.startAnalysis.mock.lastCall, [[{ file, path: 'main.py' }], false]);
+  assert.deepEqual(mocked.context.startAnalysis.mock.lastCall, [[{ file, path: 'main.py' }]]);
   const dataTransfer = { items: [], files: [file] };
   act(() => button('选择文件夹', container).parentElement.dispatchEvent(
     Object.assign(new Event('drop', { bubbles: true, cancelable: true }), { dataTransfer }),
   ));
-  assert.deepEqual(mocked.context.startFromTransfer.mock.lastCall, [dataTransfer, false]);
+  assert.deepEqual(mocked.context.startFromTransfer.mock.lastCall, [dataTransfer]);
 });
 
 test('overview distinguishes unavailable complexity and an empty static issue report', () => {

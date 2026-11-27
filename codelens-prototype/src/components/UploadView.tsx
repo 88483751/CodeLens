@@ -65,7 +65,7 @@ function useFolderDrop() {
     dragDepth.current = 0;
     setDragging(false);
     if (busy) return;
-    void startFromTransfer(event.dataTransfer, false);
+    void startFromTransfer(event.dataTransfer);
   };
   return { dragging, onDragEnter, onDragLeave, onDragOver, onDrop };
 }
@@ -166,7 +166,7 @@ function ProjectPicker() {
         aria-label="选择项目文件夹"
         onChange={(event) => {
           if (!event.target.files?.length) return;
-          void startAnalysis(filesFromInput(event.target.files), false);
+          void startAnalysis(filesFromInput(event.target.files));
           event.target.value = '';
         }}
       />

@@ -1,6 +1,6 @@
 # CodeLens 云端审查历史部署
 
-这个发布包包含浏览器工作台与独立的 FastAPI 历史服务。Nginx 提供网页，并将 `/api/sync/` 转发到同机服务。用户账号、审查报告、摘要和续跑检查点写入 SQLite。原始源码和模型配置继续由浏览器处理。报告会包含文件路径、分析结果及模型生成的内容。
+这个发布包包含浏览器工作台与独立的 FastAPI 历史服务。Nginx 提供网页，并将 `/api/sync/` 转发到同机服务。用户账号、审查报告、摘要和续跑检查点写入 PostgreSQL。原始源码和模型配置继续由浏览器处理。报告会包含文件路径、分析结果及模型生成的内容。
 
 以下命令按 CentOS 7 ECS 和 root 登录编写。每一组成功后再继续。先准备解析至 ECS 公网 IP 的域名和该域名的 Nginx 证书。杭州的公网域名按阿里云要求完成ICP备案。ECS 安全组开放 TCP 80、443，SSH 22 限定管理地址。18767 在回环地址监听。 [ECS 建站指南](https://help.aliyun.com/zh/ecs/user-guide/build-a-website/) · [下载证书](https://help.aliyun.com/zh/ssl-certificate/download-an-ssl-certificate)
 
@@ -48,7 +48,7 @@ systemctl enable --now docker
 docker info
 ```
 
-## 3. 安装历史服务和数据库目录
+## 3. 安装 PostgreSQL 和历史服务
 
 替换第一行域名。请在同一个 SSH 窗口执行后续命令，下面的变量会继续用到。
 
@@ -61,11 +61,15 @@ tar -xzf "$HOME/codelens-sync.tar.gz" -C "$release"
 test -s "$release/site/index.html" && test -s "$release/server/service.py"
 ```
 
+全新部署执行下面的配置命令。脚本创建 PostgreSQL 16 容器、持久卷和独立应用账号，数据库只绑定宿主机的 `127.0.0.1:5432`。如果已有 SQLite 网页历史，先完成下方迁移小节。使用现有 PostgreSQL 时，可在仅 root 可读的 `/etc/codelens/history.env` 中填写 `CODELENS_SYNC_ORIGIN` 和指向独立数据库的 `CODELENS_SYNC_DATABASE_URL`，并授予该角色在目标库创建表的权限。
+
 ```bash
-install -d -m 0755 /etc/codelens
-install -d -m 0700 -o 10001 -g 10001 /var/lib/codelens
-printf 'CODELENS_SYNC_ORIGIN=https://%s\n' "$domain" > /etc/codelens/history.env
-chmod 0644 /etc/codelens/history.env
+bash "$release/server/prepare-postgres.sh" "$domain"
+```
+
+数据库就绪后构建并启动历史服务。服务启动时会创建所需的表。
+
+```bash
 docker build -t codelens-history:local "$release/server"
 install -m 0644 "$release/server/codelens-history.service" /etc/systemd/system/codelens-history.service
 systemctl daemon-reload
@@ -84,6 +88,34 @@ curl --fail http://127.0.0.1:18767/api/sync/health
 ```bash
 journalctl -u codelens-history -n 60 --no-pager
 ```
+
+### 从旧网页 SQLite 迁移
+
+升级前安排停机窗口。下面保存旧服务配置和一致的 SQLite 备份，再导入空 PostgreSQL 库。沿用原网站地址可保留尚未过期的登录会话。
+
+```bash
+rollback_dir="/etc/codelens/sqlite-rollback-$(date +%Y%m%d-%H%M%S)"
+legacy_backup="history-before-postgres-$(date +%Y%m%d-%H%M%S).sqlite3"
+install -d -m 0700 "$rollback_dir" &&
+install -m 0600 /etc/codelens/history.env "$rollback_dir/history.env" &&
+install -m 0644 /etc/systemd/system/codelens-history.service "$rollback_dir/codelens-history.service" &&
+docker tag codelens-history:local codelens-history:sqlite-rollback &&
+test -s /var/lib/codelens/history.sqlite3 &&
+systemctl stop codelens-history &&
+docker run --rm --network none --volume /var/lib/codelens:/data:Z \
+  codelens-history:sqlite-rollback backup "/data/$legacy_backup" &&
+chmod 0600 "/var/lib/codelens/$legacy_backup"
+```
+
+```bash
+bash "$release/server/prepare-postgres.sh" "$domain" &&
+docker build -t codelens-history:local "$release/server" &&
+docker run --rm --network host --env-file /etc/codelens/history.env \
+  --volume /var/lib/codelens:/legacy:ro,Z codelens-history:local \
+  migrate-sqlite "/legacy/$legacy_backup"
+```
+
+导入命令输出各表的记录数。导入保留账号密码哈希、会话、报告、检查点、已删除标记和文件级审查。目标库有记录时命令会停止。确认记录数符合预期后，执行本节的安装和启动命令，再用旧账号抽查历史与续跑。若导入失败，恢复保存的 service 和 env、将旧镜像重新标记为 `codelens-history:local`，再执行 `systemctl daemon-reload` 和 `systemctl start codelens-history`。切换后若已有新写入，回滚前先备份 PostgreSQL 并核对新增记录。
 
 创建两个验收账号。每条命令会提示输入两次密码，至少 12 个字符。之后给每位用户分配自己的账号。
 
@@ -146,12 +178,15 @@ firewall-cmd --reload
 
 ## 6. 备份与后续更新
 
-下面用 SQLite 的在线备份接口生成一致的数据库副本。备份文件包含账号及审查数据，权限仅向管理者开放。完成后把备份复制到实例之外的私有存储。
+使用 PostgreSQL 的 `pg_dump` 生成一致的数据库备份。将备份复制到实例之外的私有存储。 [PostgreSQL pg_dump](https://www.postgresql.org/docs/16/app-pgdump.html)
 
 ```bash
-backup="history-$(date +%Y%m%d-%H%M%S).sqlite3"
-docker exec codelens-history python /app/service.py backup "/data/$backup"
-chmod 0600 "/var/lib/codelens/$backup"
+umask 077
+install -d -m 0700 /var/backups/codelens
+backup="/var/backups/codelens/history-$(date +%Y%m%d-%H%M%S).dump"
+docker exec codelens-postgres pg_dump -U postgres -Fc codelens > "$backup.part" &&
+docker exec -i codelens-postgres pg_restore --list < "$backup.part" >/dev/null &&
+mv -- "$backup.part" "$backup"
 ```
 
-后续更新重新打包上传，重复解包、`docker build`、`systemctl restart codelens-history` 和切换 `current` 的命令。沿用数据库目录、域名和证书，已同步的数据会随服务重新启动恢复。
+后续更新沿用 PostgreSQL 持久卷、数据库连接配置、域名和证书。重新打包、构建历史服务镜像、重启服务并切换 `current`。

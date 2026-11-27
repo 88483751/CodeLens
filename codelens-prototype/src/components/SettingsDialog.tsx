@@ -127,8 +127,8 @@ function ModelFields({ baseUrl, model }: ModelFieldsProps) {
       />
       <p className="mt-1 text-[10.5px] leading-relaxed text-faint">
         {browserMode
-          ? '使用允许本站跨域访问的 HTTPS Chat Completions 接口。启动 AI 审查时，浏览器会将待分析源码和密钥直接发给该模型服务商。'
-          : '仅支持 HTTP / HTTPS；地址中不能包含账号、密码、查询参数或片段。'}
+          ? '使用允许本站跨域访问的 HTTPS Chat Completions 接口。确认审查后，浏览器会直接发送处理过的源码片段，密钥用于请求认证。'
+          : '仅支持 HTTP / HTTPS。地址中不能包含账号、密码、查询参数或片段。确认审查后才发送处理过的源码片段。'}
       </p>
 
       <label className="mt-5 block text-[11.5px] font-medium text-ink" htmlFor="llm-model">

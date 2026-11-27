@@ -3,8 +3,6 @@ import argparse
 import asyncio
 import json
 import logging
-import os
-import sqlite3
 from pathlib import Path
 import sys
 import threading
@@ -22,7 +20,10 @@ from starlette.concurrency import run_in_threadpool
 
 from backend import credentials as secure
 from backend import observability as obs, server as core
-from backend.history import DEFAULT_PATH as HISTORY_PATH, HistoryStore
+from backend.history import HistoryStore
+from backend.local_database import start_database
+from ai.source_policy import require_source_consent
+from psycopg import Error as DatabaseError
 
 
 class SourceRequest(BaseModel):
@@ -36,6 +37,7 @@ class ReviewRequest(SourceRequest):
     scope: str = "project"
     history_run: int | None = None
     use_history: bool = True
+    source_consent: bool = False
 
 
 class HistoryRequest(BaseModel):
@@ -53,7 +55,7 @@ class EmptyRequest(BaseModel):
 
 class ExplainRequest(ReviewRequest):
     target: dict
-    include_context: bool = True
+    include_context: bool = False
 
 
 class SkillRequest(SourceRequest):
@@ -224,7 +226,7 @@ def _review_status(history, options, payload, status, result=None):
     if options and payload.get("scope", "project") == "project":
         try:
             history.save_review(options["history_project"], payload["history_run"], status, result)
-        except (OSError, sqlite3.Error) as exc:
+        except (OSError, DatabaseError) as exc:
             obs.log_event(obs.get_logger(), logging.WARNING, "history.write_failed", type=type(exc).__name__)
 
 
@@ -269,6 +271,7 @@ def _routes(app, store, history, credential_store):
 
     @app.post(obs.API_EXPLAIN, openapi_extra=_schema(ExplainRequest))
     def explain(payload=Depends(_read_payload)):
+        require_source_consent(payload)
         payload = secure.with_stored_api_key(_validate(payload, ExplainRequest), credential_store)
         return core.explanation.explain(payload)
 
@@ -278,6 +281,7 @@ def _routes(app, store, history, credential_store):
 
     @app.post(obs.API_REVIEW, response_class=StreamingResponse, openapi_extra=_schema(ReviewRequest))
     def review(request: Request, payload=Depends(_read_payload)):
+        require_source_consent(payload)
         payload = secure.with_stored_api_key(payload, credential_store)
         return StreamingResponse(_review_stream(request, payload, store, history), media_type="application/x-ndjson")
 
@@ -334,8 +338,9 @@ def main():
         parser.error("--web-dir 必须指向含 index.html 的前端构建目录")
     logger = obs.configure_logging(args.log_level, args.log_file, enable_file=not args.no_log_file)
     obs.install_crash_hooks(logger)
-    store = core.ReviewStore(os.environ.get("CODELENS_REVIEW_DB") or core.DEFAULT_PATH)
-    history = HistoryStore(os.environ.get("CODELENS_HISTORY_DB") or HISTORY_PATH)
+    dsn = start_database()
+    store = core.ReviewStore(dsn)
+    history = HistoryStore(dsn)
     uvicorn.run(create_app(store, history, web_dir=args.web_dir), host="127.0.0.1",
                 port=args.port, access_log=False, proxy_headers=False)
 

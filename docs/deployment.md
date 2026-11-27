@@ -1,6 +1,6 @@
 # CodeLens 云端审查历史版 · Linux 云服务器部署指南
 
-本文适用于 CodeLens 的远程历史同步版，覆盖打包、上线验收、证书续期、SQLite 备份和发布回滚。本次部署使用阿里云 ECS、CentOS 7、Docker、Nginx 和公网 IPv4 证书。Linux 命令以 Workbench 中的 root 会话执行，PowerShell 命令在构建电脑执行。
+本文适用于 CodeLens 的远程历史同步版，覆盖打包、上线验收、证书续期、PostgreSQL 备份和发布回滚。以下步骤面向阿里云 ECS、CentOS 7、Docker、Nginx 和公网 IPv4 证书。Linux 命令以 Workbench 中的 root 会话执行，PowerShell 命令在构建电脑执行。
 
 > 本次部署地址使用 `https://121.41.29.215/`。中国内地服务器以 IP 对外提供网站也需要办理 ICP 备案。阿里云代备案系统受理域名备案，直接使用 IP 的网站按当地通信管理局流程办理。 [阿里云备案要求](https://help.aliyun.com/zh/icp-filing/basic-icp-service/product-overview/limits)
 
@@ -13,7 +13,7 @@
                        ├── /、/engine/      /var/www/codelens/current
                        └── /api/sync/       127.0.0.1:18767
                                             └── Docker · FastAPI
-                                                └── /var/lib/codelens/history.sqlite3
+                                                └── 127.0.0.1:5432 · PostgreSQL
 
 浏览器 ── HTTPS ──> 用户配置的模型服务（启用模型功能时）
 ```
@@ -22,7 +22,7 @@
 |---|---|
 | 前端 | 在构建电脑生成同步版静态产物，随发布包上传。Nginx 负责提供首页和 Pyodide/WebAssembly 引擎 |
 | 后端 | `codelens-history.service` 由 systemd 托管，运行 `codelens-history:local` 容器 |
-| 数据库 | SQLite 使用 WAL，容器内 `/data` 对应宿主机 `/var/lib/codelens` |
+| 数据库 | PostgreSQL 16 通过回环地址连接，数据保存在 Docker 持久卷 `codelens-postgres` |
 | 账号与历史 | 登录会话、审查历史和续跑检查点在后端按账号管理 |
 | 模型与源码 | 审查在浏览器中运行，配置模型时由浏览器直接请求模型服务。同步记录中可包含文件路径、报告和模型生成的内容 |
 | 服务地址 | Nginx 提供 TCP 443，HTTP 80 用于跳转及证书验证；FastAPI 绑定回环地址 TCP 18767 |
@@ -34,7 +34,7 @@
 |---|---|
 | 宿主机 | 阿里云 ECS，CentOS 7，`x86_64` |
 | 内存与交换空间 | 部署时记录为 4 GB RAM，启用约 4 GB swap。并发容量需按实际使用情况测量 |
-| 磁盘 | 启用 swap 前日志显示约 33 GB 可用。为 Docker 镜像、网页发布目录、SQLite、日志及备份分别预留空间 |
+| 磁盘 | 启用 swap 前日志显示约 33 GB 可用。为 Docker 镜像、网页发布目录、PostgreSQL、日志及备份分别预留空间 |
 | 发布包 | 本次本地文件为 5,906,009 字节，约 5.6 MiB。重新打包后以生成文件为准 |
 
 ```bash
@@ -105,6 +105,8 @@ test -s "$release/server/nginx-tls.conf"
 
 ### 2. 构建并启动历史服务
 
+如果旧站点的网页历史仍在 SQLite，先按 [旧库迁移步骤](../deploy/sync/README.md#从旧网页-sqlite-迁移) 备份、构建镜像并导入，再回到下方安装服务的命令。后续镜像更新先按第六章备份当前 PostgreSQL。
+
 如果正在更新现有站点，先按第六章备份。构建新镜像前记录旧网页目录，并为旧镜像保留标签，供第九章回滚使用。
 
 ```bash
@@ -125,10 +127,9 @@ sed '1c\FROM public.ecr.aws/docker/library/python:3.12-slim-bookworm' \
     docker build -f - -t codelens-history:local "$release/server"
 ```
 
+全新部署运行 `bash "$release/server/prepare-postgres.sh" "$public_host"`。迁移或常规更新沿用已经生成的连接配置。
+
 ```bash
-install -d -m 0755 /etc/codelens &&
-install -d -m 0700 -o 10001 -g 10001 /var/lib/codelens &&
-printf 'CODELENS_SYNC_ORIGIN=https://%s\n' "$public_host" > /etc/codelens/history.env &&
 install -m 0644 "$release/server/codelens-history.service" /etc/systemd/system/codelens-history.service &&
 systemctl daemon-reload &&
 systemctl enable codelens-history &&
@@ -137,7 +138,7 @@ systemctl restart codelens-history
 curl -fsS --max-time 5 http://127.0.0.1:18767/api/sync/health
 ```
 
-SQLite 在服务启动时初始化。看到 `{"ready":true}` 后，可按第七章创建验收账号。
+服务启动时会创建 PostgreSQL 表。健康检查会验证数据库连接。看到 `{"ready":true}` 后，可按第七章创建验收账号。
 
 ### 3. 签发并安装 IP 证书
 
@@ -210,7 +211,7 @@ firewall-cmd --zone=public --query-port=443/tcp
 ### A. 发布前
 
 - [ ] 记录发布包 SHA-256、当前发布目录、后端镜像 ID 和操作时间。
-- [ ] 有现网数据时已完成 SQLite 备份，并保留旧镜像、旧网页和上一版 Nginx 配置。
+- [ ] 有现网数据时已备份当前数据库，并保留旧镜像、旧网页和上一版 Nginx 配置。
 - [ ] 确认公网访问地址与 `CODELENS_SYNC_ORIGIN` 一致，证书覆盖实际访问地址。
 
 ### B. 发布中
@@ -258,15 +259,18 @@ tail -n 80 /var/log/nginx/error.log
 curl -fsS --max-time 5 http://127.0.0.1:18767/api/sync/health
 ```
 
-### 2. SQLite 备份
+### 2. PostgreSQL 备份
 
-使用应用提供的在线备份命令，完成后将备份存入实例之外的受控存储。
+使用 PostgreSQL 的 pg_dump 生成一致的备份，完成后将备份存入实例之外的受控存储。 [PostgreSQL pg_dump](https://www.postgresql.org/docs/16/app-pgdump.html)
 
 ```bash
-backup="history-$(date +%Y%m%d-%H%M%S).sqlite3"
-docker exec codelens-history python /app/service.py backup "/data/$backup" &&
-chmod 0600 "/var/lib/codelens/$backup" &&
-ls -lh "/var/lib/codelens/$backup"
+umask 077
+install -d -m 0700 /var/backups/codelens
+backup="/var/backups/codelens/history-$(date +%Y%m%d-%H%M%S).dump"
+docker exec codelens-postgres pg_dump -U postgres -Fc codelens > "$backup.part" &&
+docker exec -i codelens-postgres pg_restore --list < "$backup.part" >/dev/null &&
+mv -- "$backup.part" "$backup" &&
+ls -lh "$backup"
 ```
 
 ### 3. IP 证书续期
@@ -358,6 +362,8 @@ ln -sfnT "$previous_web" /var/www/codelens/current &&
 systemctl restart codelens-history &&
 nginx -t && systemctl reload nginx
 ```
+
+从 PostgreSQL 回滚到旧 SQLite 时，还需恢复旧 service 和 env 配置并执行 systemctl daemon-reload。若切换后已有新记录，回滚前先备份 PostgreSQL 并核对差异。
 
 如果调整过 Nginx 配置，先恢复已备份的配置，再执行 `nginx -t` 和重载。最后按第五章重新验证。
 

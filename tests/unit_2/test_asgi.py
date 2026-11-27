@@ -2,16 +2,17 @@
 import asyncio
 import json
 import runpy
-import sqlite3
 from pathlib import Path
 import sys
 import threading
 from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import patch
+from psycopg import OperationalError
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "code"))
 from backend import asgi, credentials, server
+from _local_postgres import isolated_local_dsn
 
 
 class FakeCredentialBackend:
@@ -35,7 +36,7 @@ class FastApiTests(unittest.IsolatedAsyncioTestCase):
         self.store = object()
         self.credentials = credentials.CredentialStore(backend=FakeCredentialBackend())
         self.app = asgi.create_app(self.store, credential_store=self.credentials)
-        self.payload = {"project": "demo", "files": [{"path": "main.py", "content": "pass"}]}
+        self.payload = {"source_consent": True, "project": "demo", "files": [{"path": "main.py", "content": "pass"}]}
         logger = patch.object(asgi.obs, "get_logger")
         self.enterContext(logger)
 
@@ -76,7 +77,7 @@ class FastApiTests(unittest.IsolatedAsyncioTestCase):
         web = directory / "web"
         web.mkdir()
         (web / "index.html").write_text("<h1>CodeLens</h1>", encoding="utf-8")
-        history = asgi.HistoryStore(directory / "history.sqlite3")
+        history = asgi.HistoryStore(isolated_local_dsn(self))
         self.app = asgi.create_app(self.store, history, self.credentials, web_dir=web)
 
         self.assertEqual(await self.request("GET", "/"), (200, b"<h1>CodeLens</h1>"))
@@ -117,8 +118,7 @@ class FastApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("vault locked", json.loads(body)["error"])
 
     async def test_project_history_endpoints_and_review_archive(self):
-        directory = self.enterContext(TemporaryDirectory())
-        history = asgi.HistoryStore(Path(directory) / "history.sqlite3")
+        history = asgi.HistoryStore(isolated_local_dsn(self))
         self.app = asgi.create_app(self.store, history, credential_store=self.credentials)
         status, body = await self.request("GET", "/api/status")
         self.assertIn("project-history", json.loads(body)["capabilities"])
@@ -153,9 +153,9 @@ class FastApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(status, 400)
 
     def test_history_archive_failure_is_logged(self):
-        with patch.object(asgi.HistoryStore, "save_review", side_effect=sqlite3.OperationalError), \
+        with patch.object(asgi.HistoryStore, "save_review", side_effect=OperationalError), \
                 patch.object(asgi.obs, "log_event") as log:
-            asgi._review_status(asgi.HistoryStore(), {"history_project": "project"}, {"history_run": 1}, "done")
+            asgi._review_status(asgi.HistoryStore(""), {"history_project": "project"}, {"history_run": 1}, "done")
         self.assertEqual(log.call_args.args[2], "history.write_failed")
 
     async def test_invalid_inputs_preserve_status_and_request_id(self):
@@ -176,7 +176,7 @@ class FastApiTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(server, "MAX_BODY", 2):
             self.assertEqual((await self.request("POST", "/api/analyze", raw=b"123"))[0], 413)
 
-    async def test_cached_and_streamed_reviews_use_sqlite_store(self):
+    async def test_cached_and_streamed_reviews_use_configured_store(self):
         result = {"scope": "file"}
         with patch.object(server.explanation, "cached_review", return_value=result) as cached:
             _, body = await self.request("POST", "/api/review/cached", self.payload)
@@ -187,8 +187,18 @@ class FastApiTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(status, 200)
             self.assertEqual(json.loads(body), {"type": "result", "result": result})
             self.assertIs(review.call_args.kwargs["store"], self.store)
-        _, body = await self.request("POST", "/api/review", {})
+        _, body = await self.request("POST", "/api/review", {"source_consent": True})
         self.assertEqual(json.loads(body)["type"], "error")
+
+    async def test_model_routes_require_explicit_source_consent_before_dispatch(self):
+        payload = {**self.payload, "source_consent": None, "target": {"scope": "project"}}
+        with patch.object(server.explanation, "review") as review, patch.object(server.explanation, "explain") as explain:
+            for route in ("/api/review", "/api/explain"):
+                status, body = await self.request("POST", route, payload)
+                self.assertEqual(status, 400)
+                self.assertIn("请先确认", json.loads(body)["error"])
+            review.assert_not_called()
+            explain.assert_not_called()
 
     async def test_explain_and_skill_routes(self):
         status, _ = await self.request("GET", "/api/ai/status")
@@ -250,8 +260,15 @@ class FastApiTests(unittest.IsolatedAsyncioTestCase):
     def test_cli_starts_uvicorn_on_loopback(self):
         with patch.object(sys, "argv", ["asgi.py", "--port", "18888", "--no-log-file"]), \
                 patch.object(asgi.obs, "configure_logging"), patch.object(asgi.obs, "install_crash_hooks"), \
+                patch("backend.local_database.start_database", return_value="test-database"), \
                 patch.object(asgi.uvicorn, "run") as run:
             runpy.run_path(asgi.__file__, run_name="__main__")
         self.assertEqual(run.call_args.kwargs, {
             "host": "127.0.0.1", "port": 18888, "access_log": False, "proxy_headers": False,
         })
+
+    def test_cli_rejects_invalid_static_directory(self):
+        directory = self.enterContext(TemporaryDirectory())
+        with patch.object(sys, "argv", ["asgi.py", "--web-dir", directory]), \
+                patch.object(sys, "stderr"), self.assertRaises(SystemExit):
+            asgi.main()

@@ -11,6 +11,6 @@ ECS 发布静态下载页和通用程序包。每位用户将程序解压到自�
 
 ## 用户设备
 
-解压后在该目录运行 `py -3 start-local.py`（Windows）或 `python3 start-local.py`（macOS/Linux），之后访问 `http://127.0.0.1:18766/`。首次启动需要 Python 3.11+ 和可连接的 Python 软件包源。后续版本可以解压到新目录使用，历史和审查缓存仍从当前系统账户的数据目录读取。
+解压后，在终端[配置本机 PostgreSQL](../../docs/software/local-workbench.md#本机数据库)，再运行 `py -3 start-local.py`（Windows）或 `python3 start-local.py`（macOS/Linux）。浏览器访问 `http://127.0.0.1:18766/`。首次启动需要 Python 3.11+ 和可连接的 Python 软件包源。后续解压到新目录时，沿用原数据库连接即可查看历史和审查缓存。
 
-Windows 使用 `%LOCALAPPDATA%\CodeLens`，macOS 使用 `~/Library/Application Support/CodeLens`，Linux 使用 `${XDG_DATA_HOME:-$HOME/.local/share}/codelens`。保存 API Key 需要该系统账户具备可用的凭据库。此前从 `localhost:5173` 启动的开发版浏览器设置与新地址分开保存，旧的仓库内 SQLite 记录也保留在原目录。
+旧下载版的数据目录为 Windows 的 `%LOCALAPPDATA%\CodeLens`、macOS 的 `~/Library/Application Support/CodeLens` 或 Linux 的 `${XDG_DATA_HOME:-$HOME/.local/share}/codelens`。首次升级时，关闭旧版后在启动命令末尾加 `--migrate-sqlite`，将该目录中的旧库导入空 PostgreSQL。旧开发版记录在仓库的 `data/` 目录，按[迁移旧版记录](../../docs/software/local-workbench.md#迁移旧版记录)中的仓库命令处理。保存 API Key 需要该系统账户具备可用的凭据库。
