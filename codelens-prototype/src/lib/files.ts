@@ -22,12 +22,6 @@ export const EXCLUDED_DIRS = [
 ];
 const EXCLUDED_TEST_DIRS = new Set(['doc/unit', 'doc/frontend']);
 
-export const LIMITS = {
-  maxFiles: 200,
-  maxFileBytes: 1024 * 1024,
-  maxTotalBytes: 8 * 1024 * 1024,
-};
-
 export const SUPPORTED_LABEL = 'Python / C / C++ / Java / JavaScript / TypeScript / Go';
 
 export interface RawFile {
@@ -67,7 +61,7 @@ function isSupported(path: string): boolean {
 export function prepareSelection(raw: RawFile[]): PreparedSelection {
   const { supported, ignored } = filterSourceFiles(raw);
   const totalBytes = supported.reduce((sum, item) => sum + item.file.size, 0);
-  const errors = selectionErrors(supported, totalBytes);
+  const errors = supported.length ? [] : ['所选目录没有未被排除的受支持源码文件'];
   const roots = new Set(supported.map((item) => (item.path.includes('/') ? item.path.split('/')[0] : '')));
   const root = roots.size === 1 ? [...roots][0] : '';
   const project = root || '所选项目';
@@ -77,7 +71,7 @@ export function prepareSelection(raw: RawFile[]): PreparedSelection {
     path: root ? item.path.slice(root.length + 1) : item.path,
   }));
 
-  return { project, files: errors.length ? [] : files, errors, ignored, totalBytes };
+  return { project, files, errors, ignored, totalBytes };
 }
 
 function filterSourceFiles(raw: RawFile[]) {
@@ -94,26 +88,6 @@ function filterSourceFiles(raw: RawFile[]) {
     }
   }
   return { supported, ignored };
-}
-
-function selectionErrors(supported: RawFile[], totalBytes: number): string[] {
-  const errors: string[] = [];
-  if (!supported.length) {
-    errors.push('所选目录没有未被排除的受支持源码文件');
-  }
-  if (supported.length > LIMITS.maxFiles) {
-    const extra = supported.slice(LIMITS.maxFiles).map((item) => item.path);
-    errors.push(`共 ${supported.length} 个源码文件，超过 ${LIMITS.maxFiles} 个限制。超出文件：${extra.slice(0, 12).join('、')}${extra.length > 12 ? ' 等' : ''}`);
-  }
-  for (const item of supported) {
-    if (item.file.size > LIMITS.maxFileBytes) {
-      errors.push(`${item.path}：单文件 ${formatBytes(item.file.size)}，超过 ${formatBytes(LIMITS.maxFileBytes)}`);
-    }
-  }
-  if (totalBytes > LIMITS.maxTotalBytes) {
-    errors.push(`源码总量 ${formatBytes(totalBytes)}，超过 ${formatBytes(LIMITS.maxTotalBytes)}；请缩小目录范围。`);
-  }
-  return errors;
 }
 
 export function filesFromInput(list: FileList): RawFile[] {
@@ -183,10 +157,4 @@ export async function filesFromDataTransfer(
   signal.throwIfAborted();
   for (const file of fallback) if (file) output.push({ file, path: file.name });
   return output;
-}
-
-export function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / 1024 / 1024).toFixed(2)} MB`;
 }

@@ -73,7 +73,7 @@ cd codelens-prototype && npm install && npm run dev   # 终端 2：界面，loca
 
 界面地址是 [http://localhost:5173](http://localhost:5173)；18766 提供 FastAPI 接口和 /docs 文档。若后端端口被占用，用 `--port 18767` 启动并给前端设置 `VITE_API_TARGET=http://127.0.0.1:18767`。
 
-静态分析仅在本机服务内存中完成，不执行或导入目标项目。用户确认本次 AI 审查的模型地址和文件范围后，处理过的源码片段才会分批发送到该模型服务；未配置模型或审查失败时静态结果照常可用，不使用模板替代失败结果。最多 200 个文件、请求体 12 MB；默认排除测试、虚拟环境和构建目录。详细范围与限制见 [工作台说明](docs/software/local-workbench.md)。
+静态分析仅在本机服务内存中完成，不执行或导入目标项目。用户确认本次 AI 审查的模型地址和文件范围后，处理过的源码片段才会分批发送到该模型服务；未配置模型或审查失败时静态结果照常可用，不使用模板替代失败结果。默认排除测试、虚拟环境和构建目录。详细范围见 [工作台说明](docs/software/local-workbench.md)。
 
 首页只负责导入与本机静态分析，不展示 API 设置，也不会自动调用模型。进入结果页后，在顶部「模型设置」中填写兼容 `chat/completions` 的 Base URL、模型名称和 API Key，再按需生成逻辑说明、设计检查与风险评估。「导出报告」可分别选择这三部分并预览实际导出内容。审查中断后可以从服务端断点继续。API Key 保存在 Windows Credential Manager、macOS Keychain 或 Linux Secret Service，浏览器只保存接口地址和模型名称；设置窗口可随时清除已保存密钥。也可配置服务端 `CODELENS_AI_ENDPOINT`（完整端点）、`CODELENS_AI_MODEL`、`CODELENS_AI_KEY` 环境变量。
 

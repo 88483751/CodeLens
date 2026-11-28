@@ -163,7 +163,6 @@ class FastApiTests(unittest.IsolatedAsyncioTestCase):
             (403, {b"host": b"example.invalid"}, b"{}"),
             (403, {b"origin": b"http://example.invalid"}, b"{}"),
             (415, {b"content-type": b"text/plain"}, b"{}"),
-            (413, {b"content-length": b"99999999"}, b"{}"),
             (413, {}, b""),
             (400, {}, b"{"),
             (400, {}, b"{}"),
@@ -174,7 +173,13 @@ class FastApiTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(status, expected)
                 self.assertRegex(json.loads(body)["request_id"], r"^[0-9a-f]{8}$")
         with patch.object(server, "MAX_BODY", 2):
-            self.assertEqual((await self.request("POST", "/api/analyze", raw=b"123"))[0], 413)
+            self.assertEqual((await self.request("POST", "/api/credentials/delete", raw=b"123"))[0], 413)
+            self.assertEqual((await self.request("POST", "/api/credentials/delete", raw=b"123",
+                                                 overrides={b"content-length": b"3"}))[0], 413)
+            status, body = await self.request("POST", "/api/analyze", self.payload,
+                                              overrides={b"content-length": b"2048"})
+            self.assertEqual(status, 200)
+            self.assertEqual(json.loads(body)["summary"]["parsed"], 1)
 
     async def test_cached_and_streamed_reviews_use_configured_store(self):
         result = {"scope": "file"}

@@ -20,9 +20,6 @@ EXCLUDED = {
     "htmlcov", "tmp", ".tmp", ".next", ".pytest_cache", ".mypy_cache", ".ruff_cache", "logs",
 }
 EXCLUDED_TEST_DIRS = {("doc", "unit"), ("doc", "frontend")}
-MAX_FILES = 200
-MAX_FILE_BYTES = 1024 * 1024
-MAX_TOTAL_BYTES = 8 * 1024 * 1024
 RULES = [levels.RULE_CC, levels.RULE_LEN, levels.RULE_DEPTH, levels.RULE_PARAMS,
          levels.RULE_A4, levels.RULE_PRIVACY, levels.RULE_A3_IO, levels.RULE_CYCLE]
 SENSITIVE_NAME_RE = re.compile(r"(?:^|[._])(password|passwd|secret|token|api_?key|access_?key)(?:$|_)", re.I)
@@ -429,19 +426,15 @@ def _read_record(item, path, suffix):
               "language": "Python 3.11" if is_python else generic.language_of(path),
               "source": "", "status": "error",
               "functions": [], "classes": [], "line_count": 0, "code_lines": 0}
-    size = 0
     try:
         raw = _source_bytes(item)
-        if len(raw) > MAX_FILE_BYTES:
-            raise ValueError("文件超过 1 MB")
-        size = len(raw)
         record["sha256"] = hashlib.sha256(raw).hexdigest()
         record["source"] = _decode_source(raw)
         record["line_count"] = len(record["source"].splitlines())
     except (ValueError, UnicodeError, SyntaxError, LookupError) as exc:
         record["error"] = {"file": path, "line": None, "type": type(exc).__name__,
-                           "message": "读取或编码失败；请检查文件编码及大小"}
-    return record, size
+                           "message": "读取或编码失败；请检查文件编码"}
+    return record
 
 
 def _request_files(payload):
@@ -457,13 +450,8 @@ def _excluded_source(path):
     )
 
 
-def _check_file_count(records):
-    if len(records) >= MAX_FILES:
-        raise ValueError(f"最多分析 {MAX_FILES} 个源码文件，请缩小目录范围")
-
-
 def _load_records(payload):
-    records, total, seen, excluded_count = [], 0, set(), 0
+    records, seen, excluded_count = [], set(), 0
     for item in _request_files(payload):
         if not isinstance(item, dict):
             raise ValueError("文件记录无效")
@@ -474,13 +462,8 @@ def _load_records(payload):
             continue
         if path in seen:
             raise ValueError("存在重复的文件路径")
-        _check_file_count(records)
         seen.add(path)
-        record, size = _read_record(item, path, suffix)
-        total += size
-        records.append(record)
-    if total > MAX_TOTAL_BYTES:
-        raise ValueError("源码总量超过 8 MB，请缩小目录范围")
+        records.append(_read_record(item, path, suffix))
     records.sort(key=lambda r: r["path"])
     return records, excluded_count
 

@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "code"))
-from core_engine.engine import (MAX_FILE_BYTES, analyze, code_line_numbers, cycles_of,
+from core_engine.engine import (analyze, code_line_numbers, cycles_of,
                                 module_name, normalized_path, rank)
 
 NL = chr(10)
@@ -203,13 +203,9 @@ func h() {}
         with self.assertRaises(ValueError):
             analyze({"files": [{"path": "a.py", "content": "pass"},
                                {"path": "a/__init__.py", "content": ""}]})
-        with self.assertRaises(ValueError):
-            analyze({"files": [{"path": "m%d.py" % i, "content": "x" * (1024 * 1024)}
-                               for i in range(9)]})
         for item in ({"path": "a.py"},
                      {"path": "a.py", "content": 123},
-                     {"path": "a.py", "content_base64": "!!!"},
-                     {"path": "a.py", "content": "x" * (MAX_FILE_BYTES + 1)}):
+                     {"path": "a.py", "content_base64": "!!!"}):
             with self.subTest(item=item):
                 result = analyze({"files": [item]})
                 self.assertEqual(result["status"], "failed")

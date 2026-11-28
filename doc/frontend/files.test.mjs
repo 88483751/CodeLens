@@ -2,8 +2,6 @@ import assert from 'node:assert/strict';
 import {
   filesFromDataTransfer,
   filesFromInput,
-  formatBytes,
-  LIMITS,
   prepareSelection,
 } from '../../codelens-prototype/src/lib/files.ts';
 
@@ -45,30 +43,20 @@ test('selection rejects a directory with only ignored or excluded files', () => 
   assert.match(result.errors[0], /没有.*源码文件/);
 });
 
-test('file count accepts the limit and rejects the entire selection above it', () => {
-  const inputs = Array.from({ length: LIMITS.maxFiles }, (_, i) => source(`demo/${i}.py`));
-  assert.equal(prepareSelection(inputs).files.length, LIMITS.maxFiles);
-  const result = prepareSelection([...inputs, source('demo/extra.js')]);
-  assert.deepEqual(result.files, []);
-  assert.equal(result.errors.length, 1);
-  assert.match(result.errors[0], /demo\/extra\.js/);
+test('selection accepts more than 200 source files', () => {
+  const inputs = Array.from({ length: 201 }, (_, i) => source(`demo/${i}.py`));
+  const result = prepareSelection(inputs);
+  assert.equal(result.files.length, inputs.length);
+  assert.deepEqual(result.errors, []);
 });
 
-test('file and project byte caps are inclusive and enforced independently', () => {
-  const largest = new Uint8Array(LIMITS.maxFileBytes);
-  const exact = Array.from({ length: LIMITS.maxTotalBytes / largest.length }, (_, i) =>
-    source(`demo/${i}.js`, largest));
-  assert.equal(prepareSelection(exact).files.length, exact.length);
-
-  const totalOverflow = prepareSelection([...exact, source('demo/extra.py')]);
-  assert.deepEqual(totalOverflow.files, []);
-  assert.equal(totalOverflow.errors.length, 1);
-  assert.match(totalOverflow.errors[0], /源码总量/);
-
-  const fileOverflow = prepareSelection([source('demo/large.py', new Uint8Array(largest.length + 1))]);
-  assert.deepEqual(fileOverflow.files, []);
-  assert.equal(fileOverflow.errors.length, 1);
-  assert.match(fileOverflow.errors[0], /demo\/large\.py.*超过 1\.00 MB/);
+test('selection accepts a file above 1 MiB and a project above 8 MiB', () => {
+  const content = new Uint8Array(1024 * 1024 + 1);
+  const inputs = Array.from({ length: 8 }, (_, i) => source(`demo/${i}.js`, content));
+  const result = prepareSelection(inputs);
+  assert.equal(result.files.length, inputs.length);
+  assert.equal(result.totalBytes, 8 * content.length);
+  assert.deepEqual(result.errors, []);
 });
 
 test('file input uses relative paths with a filename fallback', () => {
@@ -131,13 +119,7 @@ test('entry read errors preserve the browser message or a readable fallback', as
   assert.deepEqual(await read({ isFile: false, isDirectory: false }), []);
 });
 
-test('byte formatting handles B, KB and MB transition points', () => {
-  assert.equal(formatBytes(1023), '1023 B');
-  assert.equal(formatBytes(1024), '1.0 KB');
-  assert.equal(formatBytes(1024 * 1024), '1.00 MB');
-});
-
-test('selection filters generated reports and local tests before applying limits', () => {
+test('selection filters generated reports and local tests', () => {
   const result = prepareSelection([
     source('CodeLens/tmp/coverage-tools/coverage/pytracer.py'),
     source('CodeLens/htmlcov/frontend/prettify.js'),

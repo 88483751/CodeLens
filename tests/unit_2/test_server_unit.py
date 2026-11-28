@@ -125,7 +125,7 @@ class RequestTests(unittest.TestCase):
             ("/api/analyze", {"X-CodeLens-Token": "incorrect"}, b"{}", 403),
             ("/unknown", {}, b"{}", 404),
             ("/api/analyze", {"Content-Type": "text/plain"}, b"{}", 415),
-            ("/api/analyze", {"Content-Length": str(server.MAX_BODY + 1)}, b"{}", 413),
+            ("/api/credentials/delete", {"Content-Length": str(server.MAX_BODY + 1)}, b"{}", 413),
             ("/api/analyze", {}, b"", 413),
             ("/api/analyze", {"Content-Length": "50"}, b"{}", 400),
             ("/api/analyze", {"Content-Length": "bad"}, b"{}", 400),
@@ -139,6 +139,13 @@ class RequestTests(unittest.TestCase):
 
     def test_analyze_rejects_non_object_json(self):
         self.assertEqual(self.request("POST", "/api/analyze", payload=[])[0], 400)
+
+    def test_source_requests_are_not_subject_to_the_generic_body_cap(self):
+        payload = {"files": [{"path": "a.py", "content": "pass"}]}
+        with patch.object(server, "MAX_BODY", 2):
+            status, _, body = self.request("POST", "/api/analyze", payload=payload)
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body)["summary"]["parsed"], 1)
 
     def test_body_read_timeout_is_a_correlated_408(self):
         status, _, content = self.request("POST", "/api/analyze", payload={"files": []},

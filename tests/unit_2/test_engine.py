@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "code"))
 from core_engine import engine
-from core_engine.engine import analyze, MAX_FILES
+from core_engine.engine import analyze
 
 
 def run_files(files):
@@ -57,24 +57,22 @@ class EngineTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "同名模块"):
             run_files({"pkg.py": "pass", "pkg/__init__.py": "pass"})
 
-    def test_invalid_base64_missing_content_and_oversized_files_are_isolated(self):
+    def test_invalid_base64_and_missing_content_are_isolated(self):
         files = [
             {"path": "valid.py", "content": "pass"},
             {"path": "malformed.py", "content_base64": "==?"},
             {"path": "missing.py"},
-            {"path": "too_large.py", "content": "# " + "x" * 30},
         ]
-        with patch.object(engine, "MAX_FILE_BYTES", 30):
-            result = analyze({"files": files})
+        result = analyze({"files": files})
         self.assertEqual(result["status"], "partial")
         self.assertEqual(result["summary"]["parsed"], 1)
-        self.assertEqual({item["file"] for item in result["errors"]}, {"malformed.py", "missing.py", "too_large.py"})
+        self.assertEqual({item["file"] for item in result["errors"]}, {"malformed.py", "missing.py"})
 
-    def test_total_size_is_checked_across_files_and_is_inclusive(self):
-        with patch.object(engine, "MAX_TOTAL_BYTES", 8):
-            self.assertEqual(run_files({"a.py": "pass", "b.py": "pass"})["status"], "complete")
-            with self.assertRaisesRegex(ValueError, "源码总量"):
-                run_files({"a.py": "pass\n", "b.py": "pass"})
+    def test_large_files_and_project_total_reach_the_parser(self):
+        content = "# " + "x" * (1024 * 1024)
+        result = run_files({f"large{i}.py": content for i in range(8)})
+        self.assertEqual(result["status"], "complete")
+        self.assertEqual(result["summary"]["parsed"], 8)
 
     def test_non_python_failure_does_not_remove_valid_python_output(self):
         with patch.object(engine.generic, "analyze_record", side_effect=ValueError("lexer error")):
@@ -121,11 +119,11 @@ class EngineTests(unittest.TestCase):
                          [("check", 2, 1), ("choose", 2, 1), ("choose", 1, 1), ("label", 1, 0)])
         self.assertEqual(len({f["id"] for f in rows}), 4)
 
-    def test_excluded_files_do_not_consume_file_limit(self):
-        files = {f"htmlcov/{index}.js": "ignored" for index in range(MAX_FILES)}
+    def test_excluded_files_are_counted_separately(self):
+        files = {f"htmlcov/{index}.js": "ignored" for index in range(200)}
         files["app.py"] = "pass"
         result = run_files(files)
-        self.assertEqual(result["summary"]["excluded"], MAX_FILES)
+        self.assertEqual(result["summary"]["excluded"], 200)
         self.assertEqual(result["summary"]["parsed"], 1)
 
     def test_match_complexity_excludes_default_case(self):
@@ -344,9 +342,9 @@ def run():
         with self.assertRaises(ValueError):
             analyze({"files":[{"path":"a.py","content":"pass"}]*2})
 
-    def test_file_count_limit(self):
-        with self.assertRaises(ValueError):
-            run_files({f"m{i}.py":"pass" for i in range(MAX_FILES+1)})
+    def test_accepts_more_than_200_source_files(self):
+        result = run_files({f"m{i}.py": "pass" for i in range(201)})
+        self.assertEqual(result["summary"]["parsed"], 201)
 
 
 if __name__=="__main__":

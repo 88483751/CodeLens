@@ -88,17 +88,18 @@ def _guard_post(request, hosts):
 async def _read_payload(request: Request):
     if request.headers.get("content-type", "").split(";")[0] != "application/json":
         raise RequestError(415, "仅支持 JSON 请求")
+    limit = core.post_body_limit(request.url.path)
     declared = request.headers.get("content-length")
-    if declared is not None and not 0 < int(declared) <= core.MAX_BODY:
-        raise RequestError(413, "请求超过 12 MB 或为空")
+    if declared is not None and not 0 < int(declared) <= limit:
+        raise RequestError(413, "请求体过大或为空")
     body = bytearray()
     async with asyncio.timeout(30):
         async for chunk in request.stream():
-            if len(body) + len(chunk) > core.MAX_BODY:
-                raise RequestError(413, "请求超过 12 MB 或为空")
+            if len(body) + len(chunk) > limit:
+                raise RequestError(413, "请求体过大或为空")
             body.extend(chunk)
     if not body:
-        raise RequestError(413, "请求超过 12 MB 或为空")
+        raise RequestError(413, "请求体过大或为空")
     return json.loads(body)
 
 

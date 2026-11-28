@@ -34,6 +34,7 @@ API_REVISION = 2
 CAPABILITIES = ["analyze", "explain", "explain-context", "project-review", "review-checkpoints", "class-metrics",
                 "duplicates", "class-relations", "multi-language", "special-risks"]
 MAX_BODY = 12 * 1024 * 1024
+SOURCE_POST_ROUTES = (obs.API_ANALYZE, obs.API_AI, obs.API_EXPLAIN, obs.API_REVIEW, obs.API_REVIEW_CACHED)
 MAX_AI_TARGETS = ai_runner.MAX_TARGETS
 
 
@@ -199,6 +200,10 @@ def _external_skill_files(files):
             and shareable_path(item["path"])]
 
 
+def post_body_limit(path):
+    return float("inf") if path in SOURCE_POST_ROUTES else MAX_BODY
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *_):
         # The base class echoes the raw request line, which may carry private
@@ -344,8 +349,7 @@ class Handler(BaseHTTPRequestHandler):
                           request_id=self.request_id, reason="guard")
             return self.send_data(403,{"error":"请从本机 CodeLens 页面发起分析"})
         path = self.request_path()
-        if path not in (obs.API_ANALYZE, obs.API_AI, obs.API_EXPLAIN, obs.API_REVIEW, obs.API_REVIEW_CACHED,
-                        obs.API_CREDENTIAL_SAVE, obs.API_CREDENTIAL_DELETE):
+        if path not in (*SOURCE_POST_ROUTES, obs.API_CREDENTIAL_SAVE, obs.API_CREDENTIAL_DELETE):
             return self.send_data(404,{"error":"接口不存在"})
         if self.headers.get("Content-Type", "").split(";")[0] != "application/json":
             return self.send_data(415,{"error":"仅支持 JSON 请求"})
@@ -359,8 +363,8 @@ class Handler(BaseHTTPRequestHandler):
     def _process_post(self, path, logger):
         try:
             length = int(self.headers.get("Content-Length","0"))
-            if not 0 < length <= MAX_BODY:
-                return self.send_data(413,{"error":"请求超过 12 MB 或为空"})
+            if not 0 < length <= post_body_limit(path):
+                return self.send_data(413, {"error": "请求体过大或为空"})
             return self._route_post(path, self._read_post(length))
         except (explanation.ExplanationError, secure.CredentialError) as exc:
             return self._post_model_error(logger, exc)

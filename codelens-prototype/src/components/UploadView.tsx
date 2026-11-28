@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type DragEvent } from 'react';
 import { browserMode } from '../api/browserMode';
 import { useApp } from '../state/AppState';
-import { filesFromInput, formatBytes, LIMITS, SUPPORTED_LABEL } from '../lib/files';
+import { filesFromInput, SUPPORTED_LABEL } from '../lib/files';
 import { Icon, LensMark } from './Icon';
 import { Button, ProgressBar } from './Ui';
 
@@ -179,10 +179,6 @@ function ImportFeedback() {
   const ignoredEntries = Object.entries(ignored);
   return (
     <>
-      <p className="mt-3 text-[10.5px] leading-relaxed text-faint">
-        最多 {LIMITS.maxFiles} 个源码文件；单文件 ≤{formatBytes(LIMITS.maxFileBytes)}；总量 ≤{formatBytes(LIMITS.maxTotalBytes)}。
-      </p>
-
       {errors.length ? (
         <div className="scroll-thin mt-3 max-h-36 overflow-auto rounded-[4px] border border-[#fecaca] bg-[#fef2f2] px-3 py-2.5 text-[11.5px] text-danger" role="alert">
           <ul className="list-disc space-y-1 pl-4 leading-relaxed">
